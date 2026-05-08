@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create *)",
+      "Bash(npx --yes create-vite@latest /tmp/hired-temp --template react)",
+      "Bash(cp -r /tmp/hired-temp/. /Users/carlosalvarez/Desktop/Personal/PROJECTS/Hired/)",
+      "Bash(npm install *)",
+      "Bash(grep -q \".env$\")",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
+      "Bash(kill %1)",
+      "Bash(npx tailwindcss *)",
+      "Bash(npm uninstall *)",
+      "Bash(ssh -T git@github.com)",
+      "Bash(git remote *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "mcp__claude_ai_Supabase__list_tables",
+      "mcp__claude_ai_Supabase__execute_sql",
+      "mcp__claude_ai_Supabase__get_publishable_keys",
+      "Bash(curl -s -o /dev/null -w 'legacy_anon: %{http_code}\\\\n' 'https://ihwxptpvgrnazcbciyzw.supabase.co/rest/v1/companies?select=name&limit=1' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlod3hwdHB2Z3JuYXpjYmNpeXp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNzU0ODUsImV4cCI6MjA5Mzg1MTQ4NX0.g4PEfLG2EJJmcbgsl9j-3XikrdecVICgcpW175_xDQQ')",
+      "Bash(curl -s 'https://ihwxptpvgrnazcbciyzw.supabase.co/rest/v1/companies?select=name&limit=1' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlod3hwdHB2Z3JuYXpjYmNpeXp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNzU0ODUsImV4cCI6MjA5Mzg1MTQ4NX0.g4PEfLG2EJJmcbgsl9j-3XikrdecVICgcpW175_xDQQ' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlod3hwdHB2Z3JuYXpjYmNpeXp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNzU0ODUsImV4cCI6MjA5Mzg1MTQ4NX0.g4PEfLG2EJJmcbgsl9j-3XikrdecVICgcpW175_xDQQ')",
+      "mcp__claude_ai_Supabase__apply_migration"
+    ]
+  }
+}
