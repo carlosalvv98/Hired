@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Filter, Plus, X, Mail, Link as LinkIcon } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
 import { listContacts, createContact, updateContact, findOrCreateCompany } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
@@ -30,13 +30,14 @@ export default function Connections() {
 
   return (
     <>
-      <AppBar title="Connections" crumbs="people · auto-extracted" right={
-        <>
+      <AppBar title="Connections" crumbs="people · auto-extracted" />
+      <PageActions
+        left={
           <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter…"
-            style={{ padding: '5px 9px', border: '1px solid var(--line)', borderRadius: 6, fontSize: 11.5, width: 160 }} />
-          <button className="btn primary tiny" onClick={() => setShowAdd(true)}><Plus size={13} />Add</button>
-        </>
-      } />
+            style={{ padding: '5px 9px', border: '1px solid var(--line)', borderRadius: 6, fontSize: 11.5, width: 200 }} />
+        }
+        right={<button className="btn primary tiny" onClick={() => setShowAdd(true)}><Plus size={13} />Add</button>}
+      />
       <div className="content">
         {loading ? (
           <div className="conn-grid">

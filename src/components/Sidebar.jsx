@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
-import { Home, Layers, Inbox, Calendar, FileText, Users, Settings, Plug, LogOut } from 'lucide-react'
+import { Home, Layers, Inbox, Calendar, FileText, Users, Settings, Plug, LogOut, Sparkles } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
+import { useUI } from '../hooks/useUI'
 import toast from 'react-hot-toast'
 
 const ITEMS = [
@@ -13,7 +14,8 @@ const ITEMS = [
 ]
 
 export default function Sidebar({ counts = {} }) {
-  const { profile, signOut } = useAuth()
+  const { profile, user, signOut } = useAuth()
+  const { openUpgrade } = useUI()
   const initials = profile?.name
     ? profile.name.split(' ').map(s => s[0]).join('').toUpperCase().slice(0, 2)
     : (profile?.email?.[0]?.toUpperCase() || 'U')
@@ -46,16 +48,38 @@ export default function Sidebar({ counts = {} }) {
         <span className="ico"><Settings size={16} strokeWidth={1.6} /></span>
         <span>Settings</span>
       </NavLink>
+      <div style={{ flex: 1 }} />
       <div className="sidebar-foot">
-        <div className="av">{initials}</div>
-        <div className="who" style={{ flex: 1, minWidth: 0 }}>
-          {profile?.name || profile?.email || 'You'}
-          <small>{profile?.email}</small>
+        {(user?.plan || 'free') === 'free' && (
+          <button className="sidebar-upgrade" onClick={() => openUpgrade('*')}>
+            <span className="ico"><Sparkles size={13} /></span>
+            <span style={{ flex: 1, textAlign: 'left' }}>
+              <span className="t">Upgrade to Pro</span>
+              <small>Unlock unlimited AI</small>
+            </span>
+          </button>
+        )}
+        <div className="sidebar-user">
+          <div className="av">{initials}</div>
+          <div className="who" style={{ flex: 1, minWidth: 0 }}>
+            <div className="name-row">
+              {profile?.name || profile?.email || 'You'}
+              <PlanTag plan={user?.plan || 'free'} />
+            </div>
+            <small>{profile?.email}</small>
+          </div>
+          <button className="btn ghost icon" title="Sign out" onClick={onSignOut}>
+            <LogOut size={14} strokeWidth={1.6} />
+          </button>
         </div>
-        <button className="btn ghost icon" title="Sign out" onClick={onSignOut}>
-          <LogOut size={14} strokeWidth={1.6} />
-        </button>
       </div>
     </div>
+  )
+}
+
+const PLAN_LABEL = { free: 'Free', pro: 'Pro', elite: 'Elite', university: 'University' }
+function PlanTag({ plan }) {
+  return (
+    <span className={`plan-tag plan-${plan}`}>{PLAN_LABEL[plan] || plan}</span>
   )
 }

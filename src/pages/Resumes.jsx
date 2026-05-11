@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Sparkles, Plus, Download, Upload } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import AppBar, { PageActions } from '../components/AppBar'
 import { listResumes, createResume } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { relTime } from '../lib/time'
@@ -55,7 +55,8 @@ export default function Resumes() {
 
   return (
     <>
-      <AppBar title="Resumes" crumbs={`resumes · ${resumes.length} version${resumes.length === 1 ? '' : 's'}`} right={
+      <AppBar title="Resumes" crumbs={`resumes · ${resumes.length} version${resumes.length === 1 ? '' : 's'}`} />
+      <PageActions right={
         <>
           <button className="btn ghost tiny" onClick={() => toast('Drag in a PDF or .md to import')}><Upload size={13} />Import</button>
           <button className="btn primary tiny" onClick={onNew} disabled={creating}><Plus size={13} />{creating ? 'Creating…' : 'New'}</button>

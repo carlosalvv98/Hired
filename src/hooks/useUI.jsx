@@ -10,7 +10,14 @@ export function UIProvider({ children }) {
   const [aiPanel, setAiPanel] = useState(() => {
     try { return localStorage.getItem('hired.aiPanel') === '1' } catch { return false }
   })
+  // When set, the global UpgradeModal is open. The string identifies which
+  // feature triggered it (used to highlight the right row in the comparison
+  // table). Set to '*' for a manual open with no specific feature focus.
+  const [upgradeFeature, setUpgradeFeature] = useState(null)
   const nav = useNavigate()
+
+  const openUpgrade = useCallback((feature = '*') => setUpgradeFeature(feature), [])
+  const closeUpgrade = useCallback(() => setUpgradeFeature(null), [])
 
   const openDrawer = useCallback((id) => {
     const next = new URLSearchParams(params)
@@ -51,6 +58,7 @@ export function UIProvider({ children }) {
     <UICtx.Provider value={{
       drawerId, openDrawer, closeDrawer,
       cmdK, setCmdK, aiPanel, toggleAiPanel,
+      upgradeFeature, openUpgrade, closeUpgrade,
       navigate: nav,
     }}>
       {children}

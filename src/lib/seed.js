@@ -21,23 +21,18 @@ const SAMPLE_APPS = [
   { co: 'Notion',    role_title: 'Forward Deployed',       stage: 'iv',      loc: 'NYC',      mode: 'onsite', sMin: 170000, sMax: 210000, source: 'applied_direct',   source_detail: 'careers',applied_days_ago: 23 },
   { co: 'Vercel',    role_title: 'DX Engineer',            stage: 'reject',  loc: 'Remote',   mode: 'remote', sMin: 150000, sMax: 190000, source: 'job_board',        source_detail: 'LinkedIn', applied_days_ago: 28 },
   { co: 'Linear',    role_title: 'Product Engineer',       stage: 'offer',   loc: 'Remote',   mode: 'remote', sMin: 170000, sMax: 210000, source: 'applied_direct',   source_detail: 'Email',  applied_days_ago: 36 },
-  { co: 'OpenAI',    role_title: 'Member of Tech Staff',   stage: 'screen',  loc: 'SF',       mode: 'onsite', sMin: 250000, sMax: 350000, source: 'recruiter_outbound', source_detail: 'Karen Chen', applied_days_ago: 18 },
+  { co: 'OpenAI',    role_title: 'Member of Tech Staff',   stage: 'new',     loc: 'SF',       mode: 'onsite', sMin: 250000, sMax: 350000, source: null,               source_detail: null, applied_days_ago: 0 },
   { co: 'Datadog',   role_title: 'Solutions Architect',    stage: 'applied', loc: 'NYC',      mode: 'hybrid', sMin: 165000, sMax: 205000, source: 'applied_direct',   source_detail: 'careers', applied_days_ago: 14 },
   { co: 'Brex',      role_title: 'Senior FE Engineer',     stage: 'ghost',   loc: 'SF',       mode: 'onsite', sMin: 210000, sMax: 260000, source: 'applied_direct',   source_detail: 'careers', applied_days_ago: 50 },
-  { co: 'Ramp',      role_title: 'Senior FE Engineer',     stage: 'applied', loc: 'NYC',      mode: 'hybrid', sMin: 200000, sMax: 260000, source: 'referral',         source_detail: 'Jaya Park', applied_days_ago: 16 },
+  { co: 'Ramp',      role_title: 'Senior FE Engineer',     stage: 'new',     loc: 'NYC',      mode: 'hybrid', sMin: 200000, sMax: 260000, source: null,               source_detail: null, applied_days_ago: 0 },
 ]
 
-const STEP_TEMPLATES = {
-  applied: ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite', 'Offer'],
-  screen:  ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite', 'Offer'],
-  iv:      ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite'],
-  final:   ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite', 'Offer'],
-  offer:   ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite', 'Offer'],
-  reject:  ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite'],
-  ghost:   ['Recruiter screen', 'Tech screen', 'Hiring manager', 'Onsite'],
-}
+// Default step ladder shown on every application. Standard interview pipeline.
+const DEFAULT_STEP_TITLES = ['Recruiter Screen', 'Interview 1', 'Interview 2', 'Final Interview', 'Offer']
 
-const STEP_DONE_COUNT = { applied: 0, screen: 1, iv: 2, final: 4, offer: 5, reject: 1, ghost: 0 }
+// How many of the default steps should appear "done" given the current stage,
+// so the seeded demo data looks realistic on the tracker.
+const STEP_DONE_COUNT = { new: 0, applied: 0, screen: 1, iv: 2, final: 3, offer: 4, accepted: 5, reject: 1, ghost: 0 }
 
 async function ensureCompany(name, domain) {
   const { data: existing } = await supabase.from('companies').select('id,name').ilike('name', name).maybeSingle()
@@ -51,13 +46,15 @@ const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString()
 const daysFromNow = (n) => new Date(Date.now() + n * 86400000).toISOString()
 
 export async function seedIfEmpty(userId) {
-  // Already seeded?
-  const { count, error: countErr } = await supabase
-    .from('applications')
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', userId)
-  if (countErr) throw countErr
-  if (count && count > 0) return false
+  // Only seed once per user, ever. We stamp `users.seeded_at` after the
+  // first run so that if the user deletes every demo row, they aren't
+  // re-seeded on the next sign-in. Previously we keyed off
+  // `count(applications) === 0`, which made deletions feel broken — the
+  // dummy data would come right back.
+  const { data: profile, error: profErr } = await supabase
+    .from('users').select('seeded_at').eq('id', userId).maybeSingle()
+  if (profErr) throw profErr
+  if (profile?.seeded_at) return false
 
   // Companies
   const companies = {}
@@ -69,6 +66,7 @@ export async function seedIfEmpty(userId) {
   const appIdByName = {}
   for (const s of SAMPLE_APPS) {
     const co = companies[s.co]
+    const isNew = s.stage === 'new'
     const { data: app } = await supabase.from('applications').insert({
       user_id: userId,
       company_id: co.id,
@@ -79,28 +77,28 @@ export async function seedIfEmpty(userId) {
       stage: s.stage,
       source: s.source,
       source_detail: s.source_detail,
-      applied_at: daysAgo(s.applied_days_ago),
-      last_activity_at: daysAgo(Math.floor(s.applied_days_ago / 4)),
+      applied_at: isNew ? null : daysAgo(s.applied_days_ago),
+      last_activity_at: daysAgo(isNew ? 0 : Math.floor(s.applied_days_ago / 4)),
       rating: Math.floor(Math.random() * 3) + 3,
       starred: ['offer', 'final'].includes(s.stage),
     }).select().single()
     if (!app) continue
     appIdByName[s.co] = app.id
 
-    // Steps
-    const titles = STEP_TEMPLATES[s.stage] || []
+    // Steps — every application gets the standard ladder; mark some done
+    // to reflect where the app sits in the pipeline.
     const doneN = STEP_DONE_COUNT[s.stage] || 0
-    const stepRows = titles.map((t, i) => ({
+    const stepRows = DEFAULT_STEP_TITLES.map((t, i) => ({
       application_id: app.id, idx: i, title: t,
       status: i < doneN ? 'done' : 'pending',
-      learned_from_cohort: true,
+      learned_from_cohort: false,
     }))
     if (stepRows.length) await supabase.from('interview_steps').insert(stepRows)
 
     // Initial event
     await supabase.from('application_events').insert({
       application_id: app.id, kind: 'stage_change', actor: 'user',
-      payload_json: { to: s.stage, initial: true }, at: daysAgo(s.applied_days_ago),
+      payload_json: { to: s.stage, initial: true }, at: daysAgo(isNew ? 0 : s.applied_days_ago),
     })
   }
 
@@ -262,6 +260,10 @@ Let me know which works.
       user_id: userId, kind: n.kind, body_md: n.body_md, cta_label: n.cta_label,
     })
   }
+
+  // Mark the user as seeded so we never re-seed on subsequent sign-ins,
+  // even if they delete every demo application.
+  await supabase.from('users').update({ seeded_at: new Date().toISOString() }).eq('id', userId)
 
   return true
 }

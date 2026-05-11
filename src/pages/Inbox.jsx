@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Sparkles, Inbox as InboxIcon, Flag, Star, Archive, Settings as SettingsIcon, Check, Edit2, Link as LinkIcon, MoreHorizontal, X, ArrowRight, Send } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
 import StatusPill from '../components/StatusPill'
 import { listEmails, updateEmail } from '../lib/api'
 import { relTime } from '../lib/time'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
+import { useLimit } from '../hooks/useLimit'
+import { guardLimit } from '../lib/limitGuard'
+import { trackUsage } from '../lib/ai'
 import { STAGE_LABEL } from '../lib/stages'
 import toast from 'react-hot-toast'
 
@@ -85,15 +88,16 @@ export default function Inbox() {
 
   return (
     <>
-      <AppBar title="Inbox" crumbs={`${HIRED_EMAIL} · all job email`} right={
-        <>
+      <AppBar title="Inbox" crumbs={`${HIRED_EMAIL} · all job email`} />
+      <PageActions
+        left={
           <div className="seg">
             <button className={feed === 'parsed' ? 'on' : ''} onClick={() => setFeed('parsed')}>Parsed feed</button>
             <button className={feed === 'raw' ? 'on' : ''} onClick={() => setFeed('raw')}>Raw inbox</button>
           </div>
-          <button className="btn ghost tiny"><SettingsIcon size={13} />Forwarding rules</button>
-        </>
-      } />
+        }
+        right={<button className="btn ghost tiny"><SettingsIcon size={13} />Forwarding rules</button>}
+      />
       <div className="inbox-wrap">
         <div className="mail-folders">
           <div className="hired-email-card">
@@ -240,6 +244,10 @@ export default function Inbox() {
 }
 
 function Replies({ email }) {
+  const { user } = useAuth()
+  const { openUpgrade } = useUI()
+  const { allowed: replyAllowed, refresh: refreshReplyLimit } = useLimit('email_replies')
+
   const replies = useMemo(() => {
     const sender = email.from_name?.split(' ')[0] || 'there'
     return [
@@ -249,7 +257,12 @@ function Replies({ email }) {
     ]
   }, [email.id])
 
-  const onUse = (r) => {
+  const onUse = async (r) => {
+    if (!guardLimit({ allowed: replyAllowed, feature: 'email_replies', openUpgrade })) return
+    if (user?.id) {
+      await trackUsage(user.id, 'email_replies', 'client-template-v1', 0, 0, email.linked_application_id || null)
+      refreshReplyLimit()
+    }
     const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject}`
     const body = encodeURIComponent(r.p)
     window.location.href = `mailto:${email.from_email}?subject=${encodeURIComponent(subject)}&body=${body}`

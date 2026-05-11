@@ -118,6 +118,33 @@ export async function setStepStatus(stepId, status) {
   return data;
 }
 
+// Append a single step to the end of an application's step list.
+export async function addStep(applicationId, title) {
+  const { data: existing, error: lErr } = await supabase.from('interview_steps')
+    .select('idx').eq('application_id', applicationId).order('idx', { ascending: false }).limit(1);
+  if (lErr) throw lErr;
+  const nextIdx = existing && existing.length ? existing[0].idx + 1 : 0;
+  const { data, error } = await supabase.from('interview_steps')
+    .insert({ application_id: applicationId, idx: nextIdx, title, status: 'pending', learned_from_cohort: false })
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteStep(stepId) {
+  const { error } = await supabase.from('interview_steps').delete().eq('id', stepId);
+  if (error) throw error;
+}
+
+// Persist a new ordering of step ids.
+export async function reorderSteps(applicationId, orderedIds) {
+  for (let i = 0; i < orderedIds.length; i++) {
+    const { error } = await supabase.from('interview_steps')
+      .update({ idx: i }).eq('id', orderedIds[i]);
+    if (error) throw error;
+  }
+}
+
 // Emails
 export async function listEmails({ folder = 'inbox', applicationId = null } = {}) {
   let q = supabase.from('emails')
@@ -319,7 +346,7 @@ export async function getUserProfile(id) {
 export async function getDashboardSummary() {
   const { data: apps } = await supabase.from('applications').select('stage,applied_at,last_activity_at,archived').eq('archived', false);
   const list = apps || [];
-  const counts = { applied: 0, screen: 0, iv: 0, final: 0, offer: 0, reject: 0, ghost: 0 };
+  const counts = { new: 0, applied: 0, screen: 0, iv: 0, final: 0, offer: 0, accepted: 0, reject: 0, ghost: 0 };
   list.forEach(a => { counts[a.stage] = (counts[a.stage] || 0) + 1; });
   return { total: list.length, byStage: counts };
 }

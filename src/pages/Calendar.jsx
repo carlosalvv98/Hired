@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import AppBar, { PageActions } from '../components/AppBar'
 import { listCalendar, deleteCalendarEvent } from '../lib/api'
 import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, addMonths, subMonths, format, isSameDay, isSameMonth, isToday } from 'date-fns'
 import AddEventModal from '../components/AddEventModal'
 import { useUI } from '../hooks/useUI'
+import { confirmToast } from '../lib/confirmToast'
 import toast from 'react-hot-toast'
 
 export default function CalendarPage() {
@@ -47,7 +48,8 @@ export default function CalendarPage() {
   }
 
   const onDeleteEvent = async (id) => {
-    if (!confirm('Delete this event?')) return
+    const ok = await confirmToast('Delete this event?', { confirmLabel: 'Delete', tone: 'danger' })
+    if (!ok) return
     try {
       await deleteCalendarEvent(id)
       setEvents(prev => prev.filter(e => e.id !== id))
@@ -57,14 +59,19 @@ export default function CalendarPage() {
 
   return (
     <>
-      <AppBar title="Calendar" crumbs={`${format(cursor, 'MMMM yyyy').toLowerCase()} · month`} right={
-        <>
-          <button className="btn ghost tiny" onClick={() => setCursor(new Date())}>Today</button>
-          <button className="btn ghost icon" onClick={() => setCursor(c => subMonths(c, 1))}><ChevronLeft size={13} /></button>
-          <button className="btn ghost icon" onClick={() => setCursor(c => addMonths(c, 1))}><ChevronRight size={13} /></button>
-          <button className="btn primary tiny" onClick={() => { setDefaultDate(null); setShowAdd(true) }}><Plus size={13} />Event</button>
-        </>
-      } />
+      <AppBar title="Calendar" crumbs="month" />
+      <PageActions
+        left={
+          <h2 className="page-month-h">{format(cursor, 'MMMM yyyy')}</h2>
+        }
+        right={
+          <>
+            <button className="btn ghost tiny" onClick={() => setCursor(new Date())}>Today</button>
+            <button className="btn ghost icon" onClick={() => setCursor(c => subMonths(c, 1))}><ChevronLeft size={13} /></button>
+            <button className="btn ghost icon" onClick={() => setCursor(c => addMonths(c, 1))}><ChevronRight size={13} /></button>
+            <button className="btn primary tiny" onClick={() => { setDefaultDate(null); setShowAdd(true) }}><Plus size={13} />Event</button>
+          </>
+        } />
       <div className="content tight">
         <div className="cal-grid">
           {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (

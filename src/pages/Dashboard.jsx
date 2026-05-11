@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState([])
   const [nudges, setNudges] = useState([])
   const [showAdd, setShowAdd] = useState(false)
+  const [showAddUrl, setShowAddUrl] = useState('')
   const [showAddTask, setShowAddTask] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -113,7 +114,11 @@ export default function Dashboard() {
               onOpenInbox={() => nav('/inbox')} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <QuickActions onAdd={() => setShowAdd(true)} onTask={() => setShowAddTask(true)} onResume={() => nav('/resumes')} />
+            <QuickActions
+              onAdd={(prefilledUrl = '') => { setShowAddUrl(prefilledUrl); setShowAdd(true) }}
+              onTask={() => setShowAddTask(true)}
+              onResume={() => nav('/resumes')}
+            />
             <Nudges items={nudges} onDismiss={async (id) => {
               setNudges(prev => prev.filter(n => n.id !== id))
               try { await dismissNudge(id) } catch {}
@@ -123,7 +128,11 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-      {showAdd && <AddJobModal onClose={() => setShowAdd(false)} onCreated={(a) => { load(); openDrawer(a.id) }} />}
+      {showAdd && <AddJobModal
+        defaultUrl={showAddUrl}
+        onClose={() => { setShowAdd(false); setShowAddUrl('') }}
+        onCreated={(a) => { load(); openDrawer(a.id) }}
+      />}
       {showAddTask && <AddTaskModal onClose={() => setShowAddTask(false)} onCreated={() => load()} />}
     </>
   )
@@ -232,16 +241,9 @@ function RecentEmails({ loading, emails, onOpenApp, onOpenInbox }) {
 
 function QuickActions({ onAdd, onTask, onResume }) {
   const [url, setUrl] = useState('')
-  const [chips, setChips] = useState(null)
-  const [busy, setBusy] = useState(false)
-  const onParse = async () => {
-    if (!url) return
-    setBusy(true)
-    setChips({ company: '...', role: '...', salary: '...', mode: '...' })
-    setTimeout(() => {
-      setBusy(false)
-      onAdd()
-    }, 300)
+  const onParse = () => {
+    if (!url.trim()) return
+    onAdd(url.trim())
   }
   return (
     <div className="card card-pad spotlight">
@@ -252,13 +254,16 @@ function QuickActions({ onAdd, onTask, onResume }) {
       <div className="eyebrow" style={{ fontSize: 10, color: 'var(--accent-ink)', opacity: 0.7, marginBottom: 6 }}>
         Paste link · AI fills the rest
       </div>
-      <div className="parse-input">
+      <form
+        className="parse-input"
+        onSubmit={e => { e.preventDefault(); onParse() }}
+      >
         <input type="text" placeholder="https://jobs.lever.co/anthropic/forward-deployed-eng"
           value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} />
-        <button className="btn ai" onClick={onParse} disabled={!url || busy}>
-          <Sparkles size={12} /> Parse
+        <button className="btn ai" type="submit" disabled={!url.trim()}>
+          <Sparkles size={12} /> Auto-fill
         </button>
-      </div>
+      </form>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 14, paddingTop: 14, borderTop: '1px dashed var(--accent-soft-2)' }}>
         <button className="btn ghost" style={{ justifyContent: 'flex-start', padding: '9px 12px', background: '#fff' }} onClick={onResume}>
           <FileText size={13} />New resume

@@ -1,12 +1,19 @@
-import { useEffect, useState } from 'react'
-import { X, Link as LinkIcon, MoreHorizontal, ArrowRight, Calendar as CalIcon, Sparkles, FileText, Download, Paperclip } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useUI } from '../hooks/useUI'
+import { useLimit } from '../hooks/useLimit'
+import { guardLimit } from '../lib/limitGuard'
+import { confirmToast } from '../lib/confirmToast'
+import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore } from 'lucide-react'
 import Logo from './Logo'
 import StatusPill from './StatusPill'
-import { STAGES, STAGE_LABEL, formatSalary } from '../lib/stages'
+import { STAGES, STAGE_LABEL, STAGE_ORDER } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
 import {
   getApplication, listEvents, listSteps, upsertSteps, setStepStatus,
   setStage, listEmailsForApp, listAppContacts, updateApplication,
+  addStep as apiAddStep, deleteStep as apiDeleteStep, reorderSteps,
+  listResumes, deleteApplication,
 } from '../lib/api'
 import toast from 'react-hot-toast'
 
@@ -16,9 +23,26 @@ const TABS = [
   { k: 'emails',   n: 'Emails' },
   { k: 'contacts', n: 'Contacts' },
   { k: 'notes',    n: 'Notes' },
+  { k: 'prep',     n: 'Prep me', accent: true },
 ]
 
+// Step titles that suggest progress to a specific stage. Lower-cased lookups.
+const STEP_TO_STAGE = [
+  { match: /^recruiter/i,                 stage: 'screen' },
+  { match: /^(phone )?screen/i,           stage: 'screen' },
+  { match: /^(interview|technical|case|onsite|hiring manager)/i, stage: 'iv' },
+  { match: /^final/i,                     stage: 'final' },
+  { match: /^offer/i,                     stage: 'offer' },
+]
+
+// Common steps the user can one-click append (de-duplicated against current list).
+const SUGGESTED_STEPS = ['Technical Interview', 'Case Study', 'Onsite', 'Hiring Manager', 'Team Match']
+
 export default function Drawer({ id, onClose }) {
+  const nav = useNavigate()
+  const { openUpgrade } = useUI()
+  const { allowed: prepAllowed } = useLimit('interview_prep')
+  const { allowed: tailorAllowed } = useLimit('resume_tailoring')
   const [app, setApp] = useState(null)
   const [tab, setTab] = useState('overview')
   const [events, setEvents] = useState([])
@@ -27,6 +51,12 @@ export default function Drawer({ id, onClose }) {
   const [contacts, setContacts] = useState([])
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
+  const [newStepTitle, setNewStepTitle] = useState('')
+  const [resumePicker, setResumePicker] = useState(false)
+  const [stageMenuOpen, setStageMenuOpen] = useState(false)
+  // Must live above the early-return below — React's rules of hooks require
+  // every hook to be called on every render path.
+  const dragIndex = useRef(null)
 
   const load = async () => {
     try {
@@ -59,10 +89,9 @@ export default function Drawer({ id, onClose }) {
   }
 
   const advance = async () => {
-    const order = ['applied', 'screen', 'iv', 'final', 'offer']
-    const idx = order.indexOf(app.stage)
-    if (idx === -1 || idx === order.length - 1) return
-    const next = order[idx + 1]
+    const idx = STAGE_ORDER.indexOf(app.stage)
+    if (idx === -1 || idx === STAGE_ORDER.length - 1) return
+    const next = STAGE_ORDER[idx + 1]
     try {
       const updated = await setStage(app.id, next)
       setApp(prev => ({ ...prev, ...updated }))
@@ -75,8 +104,17 @@ export default function Drawer({ id, onClose }) {
   const onChangeStage = async (newStage) => {
     try {
       const updated = await setStage(app.id, newStage)
-      setApp(prev => ({ ...prev, ...updated }))
-      toast.success(`Stage: ${STAGE_LABEL[newStage]}`)
+      let finalApp = { ...app, ...updated }
+      // Stamp applied_at the first time a row moves past "new" so the
+      // Applied column on the tracker fills in automatically.
+      const shouldStamp = !app.applied_at
+        && newStage !== 'new' && newStage !== 'reject' && newStage !== 'ghost'
+      if (shouldStamp) {
+        const stamped = await updateApplication(app.id, { applied_at: new Date().toISOString() })
+        finalApp = { ...finalApp, ...stamped }
+      }
+      setApp(finalApp)
+      toast.success(`Status: ${STAGE_LABEL[newStage]}`)
       const ev = await listEvents(id)
       setEvents(ev)
     } catch { toast.error('Could not update stage') }
@@ -89,33 +127,127 @@ export default function Drawer({ id, onClose }) {
     } catch { toast.error('Copy failed') }
   }
 
+  // Toggle a step's done/pending state and, when transitioning to done,
+  // auto-advance the application stage if the step title implies a later stage.
   const toggleStep = async (step) => {
+    const ns = step.status === 'done' ? 'pending' : 'done'
     try {
-      const ns = step.status === 'done' ? 'pending' : 'done'
       await setStepStatus(step.id, ns)
-      setSteps(prev => prev.map(s => s.id === step.id ? { ...s, status: ns } : s))
-    } catch { toast.error('Could not update step') }
+      const nextSteps = steps.map(s => s.id === step.id ? { ...s, status: ns } : s)
+      setSteps(nextSteps)
+      if (ns === 'done') {
+        const inferred = inferStageFromSteps(nextSteps, app.stage)
+        if (inferred && inferred !== app.stage) {
+          const updated = await setStage(app.id, inferred)
+          setApp(prev => ({ ...prev, ...updated }))
+          const ev = await listEvents(id)
+          setEvents(ev)
+        }
+      }
+    } catch {
+      toast.error('Could not update step')
+      // Roll back the optimistic UI on failure.
+      load()
+    }
   }
 
-  const addStep = async () => {
-    const title = prompt('Step title? (e.g. "Recruiter screen")')
+  const onAddStep = async () => {
+    const title = newStepTitle.trim()
     if (!title) return
-    const next = [...steps, { title, status: 'pending', learned_from_cohort: false }]
     try {
-      const saved = await upsertSteps(app.id, next)
-      setSteps(saved)
+      const created = await apiAddStep(app.id, title)
+      setSteps(prev => [...prev, created])
+      setNewStepTitle('')
     } catch { toast.error('Could not add step') }
   }
 
-  const saveNotes = async () => {
+  const onAddSuggested = async (title) => {
+    try {
+      const created = await apiAddStep(app.id, title)
+      setSteps(prev => [...prev, created])
+    } catch { toast.error('Could not add step') }
+  }
+
+  const onDeleteStep = async (stepId) => {
+    try {
+      await apiDeleteStep(stepId)
+      setSteps(prev => prev.filter(s => s.id !== stepId))
+    } catch { toast.error('Could not remove step') }
+  }
+
+  // Drag-to-reorder steps. We mutate locally first and persist on drop end.
+  const onDragStart = (idx) => (e) => {
+    dragIndex.current = idx
+    e.dataTransfer.effectAllowed = 'move'
+  }
+  const onDragOver = (idx) => (e) => {
+    e.preventDefault()
+    const from = dragIndex.current
+    if (from == null || from === idx) return
+    setSteps(prev => {
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(idx, 0, moved)
+      dragIndex.current = idx
+      return next
+    })
+  }
+  const onDragEnd = async () => {
+    dragIndex.current = null
+    try { await reorderSteps(app.id, steps.map(s => s.id)) }
+    catch { toast.error('Could not save order'); load() }
+  }
+
+  // Save the rich-text HTML into `notes_md`. We reuse the existing column
+  // (no migration) — the editor knows to render the value as HTML when it
+  // starts with a tag and as plain text otherwise (covers legacy plain notes).
+  const saveNotesHtml = async (html) => {
     if (savingNotes) return
     setSavingNotes(true)
     try {
-      await updateApplication(app.id, { notes_md: notes })
+      await updateApplication(app.id, { notes_md: html })
       toast.success('Notes saved')
     } catch { toast.error('Save failed') }
     finally { setSavingNotes(false) }
   }
+
+  const onDelete = async () => {
+    const ok = await confirmToast(`Delete "${app.role_title}"? This can't be undone.`,
+      { confirmLabel: 'Delete', tone: 'danger' })
+    if (!ok) return
+    try {
+      await deleteApplication(app.id)
+      toast.success('Application deleted')
+      onClose()
+    } catch { toast.error('Could not delete') }
+  }
+
+  const onToggleArchive = async () => {
+    const nextArchived = !app.archived
+    try {
+      const updated = await updateApplication(app.id, {
+        archived: nextArchived,
+        archived_at: nextArchived ? new Date().toISOString() : null,
+      })
+      setApp(prev => ({ ...prev, ...updated }))
+      toast.success(nextArchived ? 'Archived' : 'Unarchived')
+      // Close so the tracker (which is currently filtering by !archived)
+      // refreshes without showing the now-hidden row.
+      if (nextArchived) onClose()
+    } catch { toast.error('Could not update') }
+  }
+
+  const onPickResume = async (resumeId) => {
+    try {
+      const updated = await updateApplication(app.id, { resume_id: resumeId })
+      setApp(prev => ({ ...prev, ...updated, resume: { id: resumeId } }))
+      setResumePicker(false)
+      toast.success('Resume attached')
+      load()
+    } catch { toast.error('Could not attach resume') }
+  }
+
+  const hasJD = app.jd_text || app.jd_url
 
   return (
     <>
@@ -125,39 +257,59 @@ export default function Drawer({ id, onClose }) {
           <div className="row" style={{ marginBottom: 14 }}>
             <button className="btn ghost icon" onClick={onClose} title="Close"><X size={14} /></button>
             <span className="mono muted" style={{ fontSize: 10.5 }}>
-              APP-{app.id.slice(0, 6).toUpperCase()} · {shortDate(app.created_at)}
+              APP-{app.id.slice(0, 6).toUpperCase()}
             </span>
             <span style={{ flex: 1 }} />
             <button className="btn ghost tiny" onClick={onCopyLink}>
               <LinkIcon size={13} />Copy link
             </button>
+            <button className="btn ghost tiny" onClick={onToggleArchive}
+              title={app.archived ? 'Unarchive — put back on tracker' : 'Archive — hide from tracker, keep data'}>
+              {app.archived ? <><ArchiveRestore size={13} />Unarchive</> : <><Archive size={13} />Archive</>}
+            </button>
+            <button className="btn ghost tiny" onClick={onDelete} style={{ color: 'var(--bad)' }} title="Delete application">
+              <Trash2 size={13} />Delete
+            </button>
           </div>
-          <div className="row" style={{ gap: 14 }}>
+          <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
             <Logo co={app.company?.name} size={48} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.018em' }}>{app.role_title}</div>
-              <div style={{ fontSize: 13, color: 'var(--ink-3)', marginTop: 2 }}>
-                {app.company?.name} · {app.location_text || '—'} · <span className="mono">{formatSalary(app.salary_min, app.salary_max, app.salary_currency)}</span>
+              <div style={{ fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
+                {app.company?.name} · {app.location_text || '—'} · <span className="mono">{formatMoney(app.salary_min, app.salary_max, app.salary_currency)}</span>
               </div>
             </div>
-            <select value={app.stage} onChange={e => onChangeStage(e.target.value)}
-              className="pill" style={{ border: 'none', cursor: 'pointer', padding: '4px 10px', background: 'transparent' }}>
-              {STAGES.map(s => <option key={s.k} value={s.k}>{s.n}</option>)}
-            </select>
           </div>
-          <div style={{ display: 'flex', gap: 6, marginTop: 16 }}>
-            <button className="btn primary tiny" onClick={advance} disabled={['offer', 'reject', 'ghost'].includes(app.stage)}>
+          <div style={{ display: 'flex', gap: 6, marginTop: 16, alignItems: 'center' }}>
+            <button className="btn primary tiny" onClick={advance} disabled={['accepted', 'reject', 'ghost'].includes(app.stage) || STAGE_ORDER.indexOf(app.stage) === STAGE_ORDER.length - 1}>
               <ArrowRight size={12} />Move to next stage
             </button>
-            <button className="btn ai tiny">
+            <button className="btn ai tiny" onClick={() => {
+              if (!guardLimit({ allowed: prepAllowed, feature: 'interview_prep', openUpgrade })) return
+              // Real prep-guide generation lands in a follow-up — for now
+              // the guard wires the gate without spending a Claude call.
+              toast('Generating prep guide…')
+            }}>
               <Sparkles size={13} />Prep me
             </button>
+            {/* Status dropdown lives on the right end of the action row so
+                its position is identical for every job, regardless of how
+                long the role title runs. */}
+            <span style={{ flex: 1 }} />
+            <StageDropdown
+              stage={app.stage}
+              open={stageMenuOpen}
+              onToggle={() => setStageMenuOpen(v => !v)}
+              onClose={() => setStageMenuOpen(false)}
+              onPick={(k) => { setStageMenuOpen(false); onChangeStage(k) }}
+              align="right"
+            />
           </div>
         </div>
 
         <div className="drawer-tabs">
-          {TABS.map(({ k, n }) => (
-            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
+          {TABS.map(({ k, n, accent }) => (
+            <button key={k} className={`${tab === k ? 'on' : ''} ${accent ? 'tab-accent' : ''}`} onClick={() => setTab(k)}>
               {n}{k === 'emails' && emails.length ? ` · ${emails.length}` : ''}
               {k === 'contacts' && contacts.length ? ` · ${contacts.length}` : ''}
             </button>
@@ -167,19 +319,60 @@ export default function Drawer({ id, onClose }) {
         <div className="drawer-body">
           {tab === 'overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <Fact label="Location" value={app.location_text || '—'} />
-                <Fact label="Mode" value={app.mode || '—'} />
-                <Fact label="Salary" value={formatSalary(app.salary_min, app.salary_max, app.salary_currency)} mono />
-                <Fact label="Applied" value={shortDate(app.applied_at)} mono />
-                <Fact label="Source" value={app.source || '—'} />
-                <Fact label="Last activity" value={relTime(app.last_activity_at)} />
-              </div>
               <div>
-                <div className="eyebrow" style={{ marginBottom: 10 }}>Interview steps</div>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div className="eyebrow">Resume</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn ghost tiny" onClick={() => setResumePicker(true)}>
+                      <FileText size={12} />{app.resume?.id ? 'Change' : 'Attach'}
+                    </button>
+                    <button className="btn ai tiny" onClick={() => {
+                      if (!guardLimit({ allowed: tailorAllowed, feature: 'resume_tailoring', openUpgrade })) return
+                      toast('Resume tailoring is coming online — your quota check passed.')
+                    }}>
+                      <Sparkles size={12} />Tailor Resume to JD with AI
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12.5, color: app.resume?.name ? 'var(--ink-2)' : 'var(--ink-3)' }}>
+                  {app.resume?.name ? `${app.resume.name}${app.resume.version ? ` · ${app.resume.version}` : ''}` : 'No resume attached.'}
+                </div>
+              </div>
+
+              {hasJD && (
+                <div>
+                  <div className="eyebrow" style={{ marginBottom: 6 }}>Job description</div>
+                  {app.jd_text && (
+                    <div style={{ fontSize: 12.5, lineHeight: 1.6, color: 'var(--ink-2)', whiteSpace: 'pre-line', marginBottom: 8 }}>
+                      {app.jd_text}
+                    </div>
+                  )}
+                  {app.jd_url && (
+                    <a className="src-link" href={app.jd_url} target="_blank" rel="noreferrer" style={{ fontSize: 11.5 }}>
+                      ↗ View job on external site
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div className="eyebrow">Interview steps</div>
+                  <div className="mono muted" style={{ fontSize: 10.5 }}>
+                    {steps.filter(s => s.status === 'done').length}/{steps.length}
+                  </div>
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {steps.map(s => (
-                    <div key={s.id} className="card" style={{ padding: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {steps.map((s, i) => (
+                    <div key={s.id} className="card step-row"
+                      draggable
+                      onDragStart={onDragStart(i)}
+                      onDragOver={onDragOver(i)}
+                      onDragEnd={onDragEnd}
+                      style={{ padding: 10, display: 'flex', alignItems: 'center', gap: 10, cursor: 'grab' }}>
+                      <span className="step-grip" style={{ color: 'var(--ink-3)', flexShrink: 0, display: 'flex' }}>
+                        <GripVertical size={13} />
+                      </span>
                       <button onClick={() => toggleStep(s)} style={{
                         width: 18, height: 18, borderRadius: 4,
                         border: s.status === 'done' ? 'none' : '1.5px solid var(--line-2)',
@@ -192,20 +385,67 @@ export default function Drawer({ id, onClose }) {
                       <span style={{ flex: 1, fontSize: 13, textDecoration: s.status === 'done' ? 'line-through' : 'none', color: s.status === 'done' ? 'var(--ink-3)' : 'var(--ink)' }}>
                         {s.title}
                       </span>
-                      {s.learned_from_cohort && <span className="tag indigo"><Sparkles size={9} />learned</span>}
+                      <button className="btn ghost icon step-del" title="Remove step" onClick={() => onDeleteStep(s.id)}
+                        style={{ opacity: 0.6 }}>
+                        <Trash2 size={12} />
+                      </button>
                     </div>
                   ))}
-                  <button className="btn ghost tiny" onClick={addStep}>+ Add step</button>
+
+                  <form
+                    onSubmit={e => { e.preventDefault(); onAddStep() }}
+                    style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+                    <input
+                      value={newStepTitle}
+                      onChange={e => setNewStepTitle(e.target.value)}
+                      placeholder="Add a step (e.g. Technical Interview)"
+                      style={{
+                        flex: 1, fontSize: 12.5, padding: '8px 10px',
+                        border: '1px solid var(--line)', borderRadius: 7,
+                        outline: 'none', background: '#fff',
+                      }}
+                    />
+                    <button type="submit" className="btn ghost tiny" disabled={!newStepTitle.trim()}>
+                      <Plus size={12} />Add
+                    </button>
+                  </form>
+
+                  {SUGGESTED_STEPS.filter(t => !steps.some(s => s.title.toLowerCase() === t.toLowerCase())).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                      <span className="muted" style={{ fontSize: 10.5, alignSelf: 'center' }}>Quick add:</span>
+                      {SUGGESTED_STEPS
+                        .filter(t => !steps.some(s => s.title.toLowerCase() === t.toLowerCase()))
+                        .map(t => (
+                          <button key={t} className="chip" onClick={() => onAddSuggested(t)}
+                            style={{ fontSize: 11, padding: '3px 8px' }}>
+                            + {t}
+                          </button>
+                        ))}
+                    </div>
+                  )}
                 </div>
               </div>
-              {app.jd_url && (
-                <div>
-                  <div className="eyebrow" style={{ marginBottom: 6 }}>Job description</div>
-                  <a className="src-link" href={app.jd_url} target="_blank" rel="noreferrer">
-                    {app.jd_url}
-                  </a>
+
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Details</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <Fact label="Location" value={app.location_text || '—'} />
+                  <Fact label="Mode" value={app.mode || '—'} />
+                  <Fact
+                    label={app.salary_type === 'ote' ? 'OTE' : 'Base salary'}
+                    value={formatMoney(app.salary_min, app.salary_max, app.salary_currency)}
+                    mono
+                  />
+                  <Fact label="Date Added" value={shortDate(app.created_at)} mono />
+                  {app.applied_at && <Fact label="Applied" value={shortDate(app.applied_at)} mono />}
+                  {(app.ote_min || app.ote_max) && (
+                    <Fact label="OTE" value={formatMoney(app.ote_min, app.ote_max, app.salary_currency)} mono />
+                  )}
+                  {app.equity_text && <Fact label="Equity" value={app.equity_text} />}
+                  <Fact label="Source" value={app.source ? cap(app.source.replace('_', ' ')) : '—'} />
+                  <Fact label="Last activity" value={relTime(app.last_activity_at)} />
                 </div>
-              )}
+              </div>
             </div>
           )}
 
@@ -267,11 +507,6 @@ export default function Drawer({ id, onClose }) {
                         {ct.role || 'Contact'}{ct.company?.name ? ` · ${ct.company.name}` : ''}
                       </div>
                     </div>
-                    {ct.email && (
-                      <a className="btn ghost tiny" href={`mailto:${ct.email}`}>
-                        <Paperclip size={13} />
-                      </a>
-                    )}
                   </div>
                 )
               })}
@@ -279,29 +514,256 @@ export default function Drawer({ id, onClose }) {
           )}
 
           {tab === 'notes' && (
-            <div className="card card-pad">
-              <textarea
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                placeholder="Notes about this application…"
-                style={{
-                  width: '100%', minHeight: 200, border: 'none', outline: 'none',
-                  resize: 'vertical', fontSize: 13, lineHeight: 1.6,
-                  fontFamily: 'var(--sans)', color: 'var(--ink-2)', background: 'transparent',
-                }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-                <button className="btn primary tiny" onClick={saveNotes} disabled={savingNotes}>
-                  {savingNotes ? 'Saving…' : 'Save'}
-                </button>
+            <RichNotes
+              initialHtml={notes}
+              saving={savingNotes}
+              onSave={(html) => { setNotes(html); return saveNotesHtml(html) }}
+            />
+          )}
+
+          {tab === 'prep' && (
+            <div className="prep-placeholder">
+              <div className="prep-head">
+                <div className="upgrade-spark"><Sparkles size={14} /></div>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ margin: 0, fontSize: 15 }}>AI interview prep</h3>
+                  <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--ink-2)' }}>
+                    Tailored study guide based on this role's JD, your resume, and
+                    the company.
+                  </p>
+                </div>
+                <span className="tag indigo">Coming soon</span>
               </div>
+              <div className="prep-cards">
+                <div className="prep-card">
+                  <div className="prep-card-h">Likely questions</div>
+                  <div className="prep-card-b">
+                    A ranked list of behavioral + technical questions this role
+                    tends to ask, based on past candidates and the posted JD.
+                  </div>
+                </div>
+                <div className="prep-card">
+                  <div className="prep-card-h">Talking points</div>
+                  <div className="prep-card-b">
+                    The 3–5 strongest stories from your resume to lead with, each
+                    framed for this specific job description.
+                  </div>
+                </div>
+                <div className="prep-card">
+                  <div className="prep-card-h">Company brief</div>
+                  <div className="prep-card-b">
+                    Recent funding, leadership, product launches, and culture signals
+                    so you walk in informed.
+                  </div>
+                </div>
+                <div className="prep-card">
+                  <div className="prep-card-h">Smart questions to ask</div>
+                  <div className="prep-card-b">
+                    Five role-specific questions for the interviewer that signal
+                    depth without being generic.
+                  </div>
+                </div>
+              </div>
+              <button className="btn ai lg" disabled style={{ alignSelf: 'flex-start' }}>
+                <Sparkles size={13} />Generate prep guide
+              </button>
             </div>
           )}
         </div>
       </div>
+
+      {resumePicker && (
+        <ResumePicker
+          currentId={app.resume?.id}
+          onPick={onPickResume}
+          onClose={() => setResumePicker(false)}
+          onCreateNew={() => { setResumePicker(false); nav('/resumes') }}
+        />
+      )}
     </>
   )
 }
+
+// Map a checked step's title to the stage it implies, then return whichever
+// of (current, implied) sits *later* in the linear stage order. We never
+// move backwards via this auto-sync — only forward.
+function inferStageFromSteps(steps, currentStage) {
+  let furthest = currentStage
+  for (const s of steps) {
+    if (s.status !== 'done') continue
+    for (const rule of STEP_TO_STAGE) {
+      if (rule.match.test(s.title)) {
+        const a = STAGE_ORDER.indexOf(furthest)
+        const b = STAGE_ORDER.indexOf(rule.stage)
+        if (b > a) furthest = rule.stage
+      }
+    }
+  }
+  return furthest
+}
+
+// Bordered button that pops a colored stage menu — used both in the drawer
+// header and inline in each tracker row so users can always tell the status
+// is editable. Pass align="right" when the button sits near the right edge
+// of its container so the menu doesn't clip off-screen.
+export function StageDropdown({ stage, open, onToggle, onClose, onPick, align = 'left' }) {
+  const current = STAGES.find(s => s.k === stage) || STAGES[0]
+  const menuPos = align === 'right'
+    ? { right: 0, left: 'auto' }
+    : { left: 0, right: 'auto' }
+  return (
+    <div style={{ position: 'relative', zIndex: open ? 60 : 'auto' }}>
+      <button onClick={onToggle} className={`pill ${stage} stage-pill-btn`}>
+        {current.n}
+        <ChevronDown size={11} style={{ marginLeft: 4, opacity: 0.7 }} />
+      </button>
+      {open && (
+        <>
+          <div onClick={onClose}
+            style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'transparent' }} />
+          <div style={{
+            position: 'absolute', top: 'calc(100% + 4px)', ...menuPos, zIndex: 60,
+            background: '#fff', border: '1px solid var(--line)', borderRadius: 8,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 160, padding: 4,
+          }}>
+            {STAGES.map(s => (
+              <button key={s.k} className={`status-menu-item ${stage === s.k ? 'on' : ''}`}
+                onClick={() => onPick(s.k)}>
+                <span style={{ background: s.color, width: 6, height: 6, borderRadius: '50%', display: 'inline-block', marginRight: 8 }} />
+                {s.n}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Lightweight contenteditable rich-text editor for application notes.
+// Supports bold / italic / underline / unordered + ordered lists via the
+// browser's native execCommand. Legacy plain-text notes still load fine —
+// we only render as HTML when the saved value clearly looks like HTML.
+function RichNotes({ initialHtml, saving, onSave }) {
+  const ref = useRef(null)
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => {
+    if (!ref.current) return
+    const looksLikeHtml = typeof initialHtml === 'string' && /<\w+[^>]*>/.test(initialHtml)
+    ref.current.innerHTML = looksLikeHtml
+      ? initialHtml
+      : (initialHtml ? escapeHtml(initialHtml).replace(/\n/g, '<br>') : '')
+    setDirty(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialHtml])
+
+  const exec = (cmd, arg = null) => {
+    ref.current?.focus()
+    document.execCommand(cmd, false, arg)
+    setDirty(true)
+  }
+
+  const handleInput = () => setDirty(true)
+
+  const handleSave = async () => {
+    const html = ref.current?.innerHTML || ''
+    await onSave(html)
+    setDirty(false)
+  }
+
+  return (
+    <div className="card card-pad rich-notes">
+      <div className="rich-notes-toolbar" onMouseDown={e => e.preventDefault()}>
+        <button type="button" title="Bold (⌘B)" onClick={() => exec('bold')}><Bold size={13} /></button>
+        <button type="button" title="Italic (⌘I)" onClick={() => exec('italic')}><Italic size={13} /></button>
+        <button type="button" title="Underline (⌘U)" onClick={() => exec('underline')}><Underline size={13} /></button>
+        <span className="rich-notes-sep" />
+        <button type="button" title="Bulleted list" onClick={() => exec('insertUnorderedList')}><List size={13} /></button>
+        <button type="button" title="Numbered list" onClick={() => exec('insertOrderedList')}><ListOrdered size={13} /></button>
+      </div>
+      <div
+        ref={ref}
+        className="rich-notes-body"
+        contentEditable
+        suppressContentEditableWarning
+        onInput={handleInput}
+        data-placeholder="Notes about this application…"
+      />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+        <button className="btn primary tiny" onClick={handleSave} disabled={saving || !dirty}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+function ResumePicker({ currentId, onPick, onClose, onCreateNew }) {
+  const [list, setList] = useState(null)
+  useEffect(() => {
+    listResumes().then(setList).catch(() => setList([]))
+  }, [])
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 460 }}>
+        <div className="modal-head">
+          <h3>Attach a resume</h3>
+          <button className="btn ghost icon" onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className="modal-body">
+          {list == null ? (
+            <div className="muted" style={{ fontSize: 12 }}>Loading…</div>
+          ) : list.length === 0 ? (
+            <div className="muted" style={{ fontSize: 12.5 }}>You don't have any resumes yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {list.map(r => (
+                <button key={r.id} className="card card-pad"
+                  onClick={() => onPick(r.id)}
+                  style={{
+                    padding: 12, textAlign: 'left', cursor: 'pointer',
+                    borderColor: r.id === currentId ? 'var(--accent)' : undefined,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <FileText size={14} color="var(--ink-3)" />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                        {r.version || ''}{r.updated_at ? ` · updated ${relTime(r.updated_at)}` : ''}
+                      </div>
+                    </div>
+                    {r.id === currentId && <span className="tag indigo">attached</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          <button className="btn ghost lg" onClick={onCreateNew} style={{ marginTop: 8 }}>
+            <Plus size={13} />Create a new resume
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Format a min/max money range with full numbers + commas (e.g. "$130,000–$221,000").
+function formatMoney(min, max, currency = 'USD') {
+  if (!min && !max) return '—'
+  const sym = currency === 'USD' ? '$' : ''
+  const f = (n) => sym + Number(n).toLocaleString('en-US')
+  if (min && max) return `${f(min)}–${f(max)}`
+  return `${f(min || max)}+`
+}
+
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : ''
 
 function Fact({ label, value, mono }) {
   return (
@@ -316,8 +778,8 @@ function renderEvent(ev) {
   const p = ev.payload_json || {}
   switch (ev.kind) {
     case 'stage_change':
-      if (p.initial) return <>Application created in <StatusPill s={p.to} /></>
-      return <>Stage changed to <StatusPill s={p.to} />{ev.actor === 'ai' && <> · <span className="tag indigo">AI</span></>}</>
+      if (p.initial) return <>Application created</>
+      return <>Status changed to <StatusPill s={p.to} />{ev.actor === 'ai' && <> · <span className="tag indigo">AI</span></>}</>
     case 'note':
       return p.text || 'Note added'
     case 'email':

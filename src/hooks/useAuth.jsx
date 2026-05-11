@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { getUserProfile } from '../lib/api'
 import { seedIfEmpty } from '../lib/seed'
@@ -6,7 +6,7 @@ import { seedIfEmpty } from '../lib/seed'
 const AuthCtx = createContext({ user: null, profile: null, loading: true })
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
+  const [authUser, setAuthUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -22,15 +22,23 @@ export function AuthProvider({ children }) {
     let mounted = true
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return
-      setUser(data.session?.user || null)
+      setAuthUser(data.session?.user || null)
       refreshProfile(data.session?.user?.id).finally(() => setLoading(false))
     })
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user || null)
+      setAuthUser(session?.user || null)
       refreshProfile(session?.user?.id)
     })
     return () => { mounted = false; sub.subscription.unsubscribe() }
   }, [])
+
+  // Merge the public.users plan onto the auth user so consumers can read
+  // user.plan without separately reaching into profile. Defaults to 'free'
+  // when the profile row hasn't loaded yet — keeps gating safe-by-default.
+  const user = useMemo(() => {
+    if (!authUser) return null
+    return { ...authUser, plan: profile?.plan || 'free' }
+  }, [authUser, profile])
 
   const signIn = (email, password) => supabase.auth.signInWithPassword({ email, password })
   const signUp = (email, password, name) => supabase.auth.signUp({

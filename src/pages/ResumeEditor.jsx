@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Sparkles, Download, Check, RefreshCw, ArrowLeft } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import AppBar, { PageActions } from '../components/AppBar'
 import { getResume, updateResume, listApplications, createResumeScore, listResumeScores } from '../lib/api'
+import { useAuth } from '../hooks/useAuth'
+import { useUI } from '../hooks/useUI'
+import { useLimit } from '../hooks/useLimit'
+import { guardLimit } from '../lib/limitGuard'
 import toast from 'react-hot-toast'
 
 // Lightweight client-side ATS heuristic — counts unique keyword overlap
@@ -23,6 +27,9 @@ function score(jdText, resumeText) {
 export default function ResumeEditor() {
   const { id } = useParams()
   const nav = useNavigate()
+  const { user } = useAuth()
+  const { openUpgrade } = useUI()
+  const { allowed: atsAllowed, refresh: refreshAts } = useLimit('ats_scores')
   const [resume, setResume] = useState(null)
   const [content, setContent] = useState('')
   const [name, setName] = useState('')
@@ -51,6 +58,7 @@ export default function ResumeEditor() {
 
   const onScore = async () => {
     if (!scoreAppId) { toast('Pick an application to score against'); return }
+    if (!guardLimit({ allowed: atsAllowed, feature: 'ats_scores', openUpgrade })) return
     const app = apps.find(a => a.id === scoreAppId)
     if (!app) return
     const jd = [app.role_title, app.company?.name, app.jd_text || '', app.notes_md || ''].filter(Boolean).join(' ')
@@ -60,6 +68,13 @@ export default function ResumeEditor() {
         resume_id: id, application_id: scoreAppId,
         score: res.score, breakdown_json: res, model: 'client-heuristic-v1',
       })
+      // Record against the ats_scores quota. Heuristic scorer doesn't burn
+      // tokens, but the count itself is what the tier limit gates on.
+      if (user?.id) {
+        const { trackUsage } = await import('../lib/ai')
+        await trackUsage(user.id, 'ats_scores', 'client-heuristic-v1', 0, 0, scoreAppId)
+        refreshAts()
+      }
       const next = await listResumeScores(id)
       setScores(next)
       toast.success(`Score: ${res.score}`)
@@ -85,7 +100,8 @@ export default function ResumeEditor() {
 
   return (
     <>
-      <AppBar title={name || 'Resume'} crumbs="resumes / editor" right={
+      <AppBar title={name || 'Resume'} crumbs="resumes / editor" />
+      <PageActions right={
         <>
           <button className="btn ghost tiny" onClick={() => nav('/resumes')}><ArrowLeft size={13} />Library</button>
           <button className="btn ghost tiny" onClick={onExport}><Download size={13} />Export .md</button>

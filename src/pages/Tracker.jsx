@@ -1,34 +1,62 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Plus, Download, Sparkles, Table, KanbanSquare, LayoutGrid, ChevronDown, GripVertical, ExternalLink, Bell } from 'lucide-react'
-import AppBar from '../components/AppBar'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Plus, Download, Sparkles, Table, KanbanSquare, LayoutGrid, ChevronDown, GripVertical, ExternalLink, FileText, X, Trash2 } from 'lucide-react'
+import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
 import StatusPill from '../components/StatusPill'
+import { StageDropdown } from '../components/Drawer'
 import Rating from '../components/Rating'
 import IvProgress from '../components/IvProgress'
 import AddJobModal from '../components/AddJobModal'
-import { listApplications, updateApplication, setStage, listSteps } from '../lib/api'
+import { listApplications, updateApplication, setStage, listSteps, listResumes, deleteApplication } from '../lib/api'
+import { useLimit } from '../hooks/useLimit'
+import { guardLimit } from '../lib/limitGuard'
+import { confirmToast } from '../lib/confirmToast'
 import { STAGES, formatSalary } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
 import { useUI } from '../hooks/useUI'
 import toast from 'react-hot-toast'
 
 const COLS = [
+  { k: 'select',   label: '',                   w: 32,  align: 'center', fixed: true },
   { k: 'star',     label: '★',                  w: 92,  align: 'left' },
   { k: 'role',     label: 'Role / Company',     w: 260, align: 'left' },
   { k: 'loc',      label: 'Location',           w: 90,  align: 'left' },
   { k: 'mode',     label: 'Remote?',            w: 90,  align: 'left' },
   { k: 'status',   label: 'Status',             w: 112, align: 'left' },
-  { k: 'applied',  label: 'Applied',            w: 90,  align: 'left' },
   { k: 'salary',   label: 'Salary range',       w: 130, align: 'left' },
   { k: 'progress', label: 'Interview progress', w: 220, align: 'left' },
   { k: 'resume',   label: 'Resume',             w: 100, align: 'left' },
-  { k: 'source',   label: 'Source',             w: 150, align: 'left' },
+  { k: 'applied',  label: 'Applied',            w: 90,  align: 'left' },
+  { k: 'source',   label: 'Source',             w: 96,  align: 'left' },
   { k: 'last',     label: 'Last activity',      w: 100, align: 'right' },
   { k: 'link',     label: 'JD',                 w: 36,  align: 'center' },
 ]
 
-const STOP_PROP = new Set(['star', 'source', 'link'])
+// Map column key → field on an application row for sorting. Columns not
+// listed here can't be sorted (selection / progress / link / star).
+const SORT_FIELD = {
+  role:    a => (a.role_title || '').toLowerCase(),
+  loc:     a => (a.location_text || '').toLowerCase(),
+  mode:    a => a.mode || '',
+  status:  a => a.stage || '',
+  salary:  a => a.salary_max || a.salary_min || 0,
+  resume:  a => a.resume?.name?.toLowerCase() || '',
+  applied: a => a.applied_at ? new Date(a.applied_at).getTime() : 0,
+  source:  a => (a.source || '').toLowerCase(),
+  last:    a => a.last_activity_at ? new Date(a.last_activity_at).getTime() : 0,
+}
+
+const STOP_PROP = new Set(['select', 'star', 'source', 'link', 'resume', 'status'])
+
+// Should we auto-stamp applied_at on this stage change? Yes when moving
+// from "new" (or no applied date) into any stage that means the user has
+// actually applied. Doesn't overwrite an existing applied_at.
+function needsAppliedStamp(row, nextStage) {
+  if (row.applied_at) return false
+  if (nextStage === 'new' || nextStage === 'reject' || nextStage === 'ghost') return false
+  return true
+}
 
 export default function Tracker() {
   const [view, setView] = useState('table')
@@ -37,14 +65,20 @@ export default function Tracker() {
   const [steps, setSteps] = useState({})
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState({})
+  const [statusFilterOpen, setStatusFilterOpen] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [resumePickerFor, setResumePickerFor] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkStageOpen, setBulkStageOpen] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+  const [sort, setSort] = useState({ key: null, dir: 'asc' })
   const [params, setParams] = useSearchParams()
   const { openDrawer } = useUI()
 
   const load = async () => {
     setLoading(true)
     try {
-      const a = await listApplications()
+      const a = await listApplications({ archived: showArchived })
       setApps(a)
       const stepsByApp = {}
       await Promise.all(a.map(async app => {
@@ -56,7 +90,7 @@ export default function Tracker() {
     } finally { setLoading(false) }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [showArchived])
 
   useEffect(() => {
     if (params.get('addjob') === '1') {
@@ -70,8 +104,19 @@ export default function Tracker() {
   const filtered = useMemo(() => {
     let out = apps
     if (filter.stage) out = out.filter(a => a.stage === filter.stage)
+    if (sort.key && SORT_FIELD[sort.key]) {
+      const accessor = SORT_FIELD[sort.key]
+      const mult = sort.dir === 'desc' ? -1 : 1
+      out = [...out].sort((a, b) => {
+        const va = accessor(a)
+        const vb = accessor(b)
+        if (va < vb) return -1 * mult
+        if (va > vb) return  1 * mult
+        return 0
+      })
+    }
     return out
-  }, [apps, filter])
+  }, [apps, filter, sort])
 
   const onSetRating = async (id, rating) => {
     setApps(prev => prev.map(a => a.id === id ? { ...a, rating } : a))
@@ -82,6 +127,70 @@ export default function Tracker() {
   const onCreated = (app) => {
     load()
     setTimeout(() => openDrawer(app.id), 200)
+  }
+
+  // Selection helpers — Set wrapped in state, but always rebuild it on
+  // mutation so React picks up the change. lastClickedIndex powers
+  // shift-click range selection.
+  const lastClickedIndex = useRef(null)
+  const toggleSelect = (id, shift, rowIndex, visibleApps) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (shift && lastClickedIndex.current != null && visibleApps) {
+        const [a, b] = [lastClickedIndex.current, rowIndex].sort((x, y) => x - y)
+        for (let i = a; i <= b; i++) next.add(visibleApps[i].id)
+      } else {
+        next.has(id) ? next.delete(id) : next.add(id)
+      }
+      lastClickedIndex.current = rowIndex
+      return next
+    })
+  }
+  const clearSelection = () => setSelectedIds(new Set())
+  const selectAllVisible = (visibleApps) => setSelectedIds(new Set(visibleApps.map(a => a.id)))
+
+  const onBulkStage = async (stage) => {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    setBulkStageOpen(false)
+    const now = new Date().toISOString()
+    // Optimistic — stamp applied_at for any row crossing into a post-"new"
+    // stage that doesn't have one yet.
+    setApps(prev => prev.map(a => ids.includes(a.id)
+      ? { ...a, stage, applied_at: needsAppliedStamp(a, stage) ? now : a.applied_at }
+      : a))
+    try {
+      await Promise.all(ids.map(async (id) => {
+        const row = apps.find(a => a.id === id)
+        await setStage(id, stage)
+        if (row && needsAppliedStamp(row, stage)) {
+          await updateApplication(id, { applied_at: now })
+        }
+      }))
+      toast.success(`Updated ${ids.length} application${ids.length === 1 ? '' : 's'}`)
+      clearSelection()
+    } catch {
+      toast.error('Some updates failed')
+      load()
+    }
+  }
+
+  const onBulkDelete = async () => {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    const ok = await confirmToast(
+      `Delete ${ids.length} application${ids.length === 1 ? '' : 's'}? This can't be undone.`,
+      { confirmLabel: 'Delete', tone: 'danger' })
+    if (!ok) return
+    setApps(prev => prev.filter(a => !ids.includes(a.id)))
+    try {
+      await Promise.all(ids.map(id => deleteApplication(id)))
+      toast.success(`Deleted ${ids.length}`)
+      clearSelection()
+    } catch {
+      toast.error('Some deletes failed')
+      load()
+    }
   }
 
   const onExport = () => {
@@ -107,13 +216,16 @@ export default function Tracker() {
 
   return (
     <>
-      <AppBar title="Tracker" crumbs={`tracker · ${view}`} right={
+      <AppBar title="Tracker" crumbs={`tracker · ${view}${showArchived ? ' · archived' : ''}`} />
+      <PageActions right={
         <>
-          <button className="btn ghost tiny" onClick={() => setShowAdd(true)}>
-            <Plus size={13} />Add
+          <button className={`btn ghost tiny ${showArchived ? 'on' : ''}`}
+            onClick={() => setShowArchived(v => !v)}
+            title={showArchived ? 'Showing archived applications' : 'Show archived applications'}>
+            {showArchived ? 'Showing archived' : 'Show archived'}
           </button>
-          <button className="btn ai tiny">
-            <Sparkles size={13} />Ask AI
+          <button className="btn primary tiny" onClick={() => setShowAdd(true)}>
+            <Plus size={13} />Add job
           </button>
         </>
       } />
@@ -124,13 +236,34 @@ export default function Tracker() {
           <button className={view === 'cards' ? 'on' : ''} onClick={() => setView('cards')}><LayoutGrid size={13} />Cards</button>
         </div>
         <div style={{ width: 1, height: 18, background: 'var(--line)', margin: '0 4px' }} />
-        <span className={`chip ${filter.stage ? 'on' : ''}`} onClick={() => {
-          const s = prompt('Filter stage (applied/screen/iv/final/offer/reject/ghost) — empty to clear')
-          if (s === null) return
-          setFilter({ ...filter, stage: s.trim() || undefined })
-        }}>
-          Status{filter.stage ? `: ${filter.stage}` : ''} <ChevronDown size={11} />
-        </span>
+        <div style={{ position: 'relative', zIndex: statusFilterOpen ? 60 : 'auto' }}>
+          <span className={`chip ${filter.stage ? 'on' : ''}`} onClick={() => setStatusFilterOpen(v => !v)}>
+            Status{filter.stage ? `: ${STAGES.find(s => s.k === filter.stage)?.n || filter.stage}` : ''} <ChevronDown size={11} />
+          </span>
+          {statusFilterOpen && (
+            <>
+              <div onClick={() => setStatusFilterOpen(false)}
+                style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'transparent' }} />
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 60,
+                background: '#fff', border: '1px solid var(--line)', borderRadius: 8,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 180, padding: 4,
+              }}>
+                <button className={`status-menu-item ${!filter.stage ? 'on' : ''}`}
+                  onClick={() => { setFilter({ ...filter, stage: undefined }); setStatusFilterOpen(false) }}>
+                  All statuses
+                </button>
+                {STAGES.map(s => (
+                  <button key={s.k} className={`status-menu-item ${filter.stage === s.k ? 'on' : ''}`}
+                    onClick={() => { setFilter({ ...filter, stage: s.k }); setStatusFilterOpen(false) }}>
+                    <span style={{ background: s.color, width: 6, height: 6, borderRadius: '50%', display: 'inline-block', marginRight: 8 }} />
+                    {s.n}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <span style={{ flex: 1 }} />
         <span className="mono muted" style={{ fontSize: 11 }}>{filtered.length} of {apps.length}</span>
         <div className="seg">
@@ -138,7 +271,6 @@ export default function Tracker() {
           <button className={density === 'regular' ? 'on' : ''} onClick={() => setDensity('regular')}>Regular</button>
         </div>
         <button className="btn ghost tiny" onClick={onExport}><Download size={13} />Export</button>
-        <button className="btn primary tiny" onClick={() => setShowAdd(true)}><Plus size={13} />Add</button>
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -149,7 +281,46 @@ export default function Tracker() {
         ) : filtered.length === 0 ? (
           <EmptyTracker onAdd={() => setShowAdd(true)} />
         ) : view === 'table' ? (
-          <TrackerTable apps={filtered} steps={steps} density={density} onOpen={openDrawer} onSetRating={onSetRating} />
+          <>
+            {selectedIds.size > 0 && (
+              <BulkBar
+                count={selectedIds.size}
+                stageMenuOpen={bulkStageOpen}
+                onToggleStageMenu={() => setBulkStageOpen(v => !v)}
+                onCloseStageMenu={() => setBulkStageOpen(false)}
+                onPickStage={onBulkStage}
+                onDelete={onBulkDelete}
+                onClear={clearSelection}
+              />
+            )}
+            <TrackerTable
+              apps={filtered}
+              steps={steps}
+              density={density}
+              onOpen={openDrawer}
+              onSetRating={onSetRating}
+              onPickResume={(id) => setResumePickerFor(id)}
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              onSelectAll={() => selectAllVisible(filtered)}
+              onClearSelection={clearSelection}
+              sort={sort}
+              onSort={(key) => setSort(prev => prev.key === key
+                ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                : { key, dir: 'asc' })}
+              onChangeStage={async (id, stage) => {
+                const row = apps.find(a => a.id === id)
+                const stamp = row && needsAppliedStamp(row, stage)
+                const now = new Date().toISOString()
+                setApps(prev => prev.map(a => a.id === id
+                  ? { ...a, stage, applied_at: stamp ? now : a.applied_at } : a))
+                try {
+                  await setStage(id, stage)
+                  if (stamp) await updateApplication(id, { applied_at: now })
+                } catch { toast.error('Could not change status'); load() }
+              }}
+            />
+          </>
         ) : view === 'kanban' ? (
           <TrackerKanban apps={filtered} onOpen={openDrawer} onMove={async (id, stage) => {
             setApps(prev => prev.map(a => a.id === id ? { ...a, stage } : a))
@@ -162,7 +333,68 @@ export default function Tracker() {
       </div>
 
       {showAdd && <AddJobModal onClose={() => setShowAdd(false)} onCreated={onCreated} />}
+      {resumePickerFor && (
+        <ResumePickerModal
+          applicationId={resumePickerFor}
+          currentId={apps.find(a => a.id === resumePickerFor)?.resume?.id}
+          onClose={() => setResumePickerFor(null)}
+          onPicked={async (resumeId) => {
+            try {
+              await updateApplication(resumePickerFor, { resume_id: resumeId })
+              toast.success('Resume attached')
+              setResumePickerFor(null)
+              load()
+            } catch { toast.error('Could not attach resume') }
+          }}
+        />
+      )}
     </>
+  )
+}
+
+function ResumePickerModal({ applicationId, currentId, onClose, onPicked }) {
+  const nav = useNavigate()
+  const [list, setList] = useState(null)
+  useEffect(() => { listResumes().then(setList).catch(() => setList([])) }, [])
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 460 }}>
+        <div className="modal-head">
+          <h3>Attach a resume</h3>
+          <button className="btn ghost icon" onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className="modal-body">
+          {list == null ? (
+            <div className="muted" style={{ fontSize: 12 }}>Loading…</div>
+          ) : list.length === 0 ? (
+            <div className="muted" style={{ fontSize: 12.5 }}>You don't have any resumes yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {list.map(r => (
+                <button key={r.id} className="card card-pad"
+                  onClick={() => onPicked(r.id)}
+                  style={{
+                    padding: 12, textAlign: 'left', cursor: 'pointer',
+                    borderColor: r.id === currentId ? 'var(--accent)' : undefined,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <FileText size={14} color="var(--ink-3)" />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.version || ''}</div>
+                    </div>
+                    {r.id === currentId && <span className="tag indigo">attached</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          <button className="btn ghost lg" onClick={() => { onClose(); nav('/resumes') }} style={{ marginTop: 8 }}>
+            <Plus size={13} />Create a new resume
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -187,10 +419,17 @@ function EmptyTracker({ onAdd }) {
   )
 }
 
-function TrackerTable({ apps, steps, density, onOpen, onSetRating }) {
+function TrackerTable({
+  apps, steps, density, onOpen, onSetRating, onPickResume, onChangeStage,
+  selectedIds, onToggleSelect, onSelectAll, onClearSelection,
+  sort, onSort,
+}) {
   const [order, setOrder] = useState(() => COLS.map(c => c.k))
   const [dragKey, setDragKey] = useState(null)
   const [overKey, setOverKey] = useState(null)
+  const [openStageId, setOpenStageId] = useState(null)
+  const allSelected = apps.length > 0 && apps.every(a => selectedIds.has(a.id))
+  const someSelected = !allSelected && apps.some(a => selectedIds.has(a.id))
   const colMap = useMemo(() => Object.fromEntries(COLS.map(c => [c.k, c])), [])
   const cols = order.map(k => colMap[k]).filter(Boolean)
   const padY = density === 'compact' ? 7 : 11
@@ -216,28 +455,67 @@ function TrackerTable({ apps, steps, density, onOpen, onSetRating }) {
         <table className="tbl tbl-reorderable">
           <thead>
             <tr>
-              {cols.map(c => (
-                <th key={c.k} draggable
-                  onDragStart={onDragStart(c.k)} onDragOver={onDragOver(c.k)} onDrop={onDrop(c.k)}
-                  onDragEnd={() => { setDragKey(null); setOverKey(null) }}
-                  className={`th-drag ${dragKey === c.k ? 'th-dragging' : ''} ${overKey === c.k && dragKey && dragKey !== c.k ? 'th-over' : ''}`}
-                  style={{ width: c.w, textAlign: c.align }}>
-                  <span className="th-inner">
-                    <span className="th-grip"><GripVertical size={11} /></span>
-                    <span>{c.label}</span>
-                  </span>
-                </th>
-              ))}
+              {cols.map(c => {
+                if (c.k === 'select') {
+                  return (
+                    <th key={c.k} style={{ width: c.w, textAlign: c.align }}>
+                      <input type="checkbox"
+                        className="tbl-check"
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = someSelected }}
+                        onChange={() => allSelected ? onClearSelection() : onSelectAll()}
+                        onClick={e => e.stopPropagation()}
+                        aria-label="Select all rows"
+                      />
+                    </th>
+                  )
+                }
+                const sortable = !!SORT_FIELD[c.k]
+                const active = sort?.key === c.k
+                return (
+                  <th key={c.k} draggable
+                    onDragStart={onDragStart(c.k)} onDragOver={onDragOver(c.k)} onDrop={onDrop(c.k)}
+                    onDragEnd={() => { setDragKey(null); setOverKey(null) }}
+                    onClick={sortable ? () => onSort?.(c.k) : undefined}
+                    className={`th-drag ${sortable ? 'th-sortable' : ''} ${active ? 'th-sorted' : ''} ${dragKey === c.k ? 'th-dragging' : ''} ${overKey === c.k && dragKey && dragKey !== c.k ? 'th-over' : ''}`}
+                    style={{ width: c.w, textAlign: c.align }}>
+                    <span className="th-inner">
+                      <span className="th-grip"><GripVertical size={11} /></span>
+                      <span>{c.label}</span>
+                      {active && (
+                        <span className="th-sort-ind">{sort.dir === 'asc' ? '↑' : '↓'}</span>
+                      )}
+                    </span>
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
-            {apps.map(a => (
-              <tr key={a.id} className={`s-${a.stage}`} onClick={() => onOpen(a.id)}>
+            {apps.map((a, rowIndex) => (
+              <tr key={a.id}
+                className={`s-${a.stage} ${selectedIds.has(a.id) ? 'row-selected' : ''}`}
+                onClick={() => onOpen(a.id)}>
                 {cols.map(c => (
                   <td key={c.k}
                     style={{ padding: `${padY}px 10px`, textAlign: c.align }}
                     onClick={STOP_PROP.has(c.k) ? (e) => e.stopPropagation() : undefined}>
-                    {renderCell(c.k, a, steps[a.id] || [], onSetRating)}
+                    {c.k === 'select' ? (
+                      <input type="checkbox"
+                        className="tbl-check"
+                        checked={selectedIds.has(a.id)}
+                        onChange={(e) => onToggleSelect(a.id, e.nativeEvent.shiftKey, rowIndex, apps)}
+                        onClick={e => e.stopPropagation()}
+                        aria-label={`Select ${a.role_title}`}
+                      />
+                    ) : renderCell(c.k, a, steps[a.id] || [], {
+                      onSetRating,
+                      onPickResume,
+                      stageOpen: openStageId === a.id,
+                      onToggleStage: () => setOpenStageId(openStageId === a.id ? null : a.id),
+                      onCloseStage: () => setOpenStageId(null),
+                      onPickStage: (k) => { setOpenStageId(null); onChangeStage(a.id, k) },
+                    })}
                   </td>
                 ))}
               </tr>
@@ -249,7 +527,8 @@ function TrackerTable({ apps, steps, density, onOpen, onSetRating }) {
   )
 }
 
-function renderCell(k, a, steps, onSetRating) {
+function renderCell(k, a, steps, h) {
+  const { onSetRating, onPickResume, stageOpen, onToggleStage, onCloseStage, onPickStage } = h
   switch (k) {
     case 'star':
       return <Rating value={a.rating || 0} onChange={(v) => onSetRating(a.id, v)} />
@@ -265,14 +544,27 @@ function renderCell(k, a, steps, onSetRating) {
       )
     case 'loc':      return <span style={{ color: 'var(--ink-2)', fontSize: 12 }}>{a.location_text || '—'}</span>
     case 'mode':     return <span style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{a.mode ? cap(a.mode) : '—'}</span>
-    case 'status':   return <StatusPill s={a.stage} />
+    case 'status':
+      return (
+        <StageDropdown
+          stage={a.stage}
+          open={stageOpen}
+          onToggle={onToggleStage}
+          onClose={onCloseStage}
+          onPick={onPickStage}
+        />
+      )
     case 'applied':  return <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{shortDate(a.applied_at)}</span>
     case 'salary':   return <span className="mono" style={{ fontSize: 12, color: 'var(--ink-2)' }}>{formatSalary(a.salary_min, a.salary_max, a.salary_currency)}</span>
     case 'progress': return <IvProgress steps={steps} />
     case 'resume':
-      return a.resume?.name
-        ? <span className="resume-tag">{a.resume.version || a.resume.name.slice(0, 12)}</span>
-        : <span className="resume-tag empty">—</span>
+      return (
+        <button className="resume-tag-btn" onClick={() => onPickResume?.(a.id)}>
+          {a.resume?.name
+            ? <span className="resume-tag">{a.resume.version || a.resume.name.slice(0, 12)}</span>
+            : <span className="resume-tag empty">—</span>}
+        </button>
+      )
     case 'source':
       return <span className="src-link"><span className="who">{a.source_detail || (a.source ? cap(a.source.replace('_', ' ')) : '—')}</span></span>
     case 'last':     return <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{relTime(a.last_activity_at)}</span>
@@ -287,10 +579,52 @@ function renderCell(k, a, steps, onSetRating) {
 }
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : ''
 
+// Floating bar that appears above the table when one or more rows are
+// selected. Lets the user bulk-update status or delete in one shot.
+function BulkBar({ count, stageMenuOpen, onToggleStageMenu, onCloseStageMenu, onPickStage, onDelete, onClear }) {
+  return (
+    <div className="bulk-bar">
+      <span className="bulk-count">
+        <strong>{count}</strong> selected
+      </span>
+      <button className="btn ghost tiny" onClick={onClear}>
+        <X size={12} />Clear
+      </button>
+      <span style={{ flex: 1 }} />
+      <div style={{ position: 'relative', zIndex: stageMenuOpen ? 60 : 'auto' }}>
+        <button className="btn ghost tiny" onClick={onToggleStageMenu}>
+          Set status <ChevronDown size={11} />
+        </button>
+        {stageMenuOpen && (
+          <>
+            <div onClick={onCloseStageMenu}
+              style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'transparent' }} />
+            <div style={{
+              position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 60,
+              background: '#fff', border: '1px solid var(--line)', borderRadius: 8,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 180, padding: 4,
+            }}>
+              {STAGES.map(s => (
+                <button key={s.k} className="status-menu-item" onClick={() => onPickStage(s.k)}>
+                  <span style={{ background: s.color, width: 6, height: 6, borderRadius: '50%', display: 'inline-block', marginRight: 8 }} />
+                  {s.n}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      <button className="btn ghost tiny" onClick={onDelete} style={{ color: 'var(--bad)' }}>
+        <Trash2 size={12} />Delete
+      </button>
+    </div>
+  )
+}
+
 function TrackerKanban({ apps, onOpen, onMove }) {
   const [dragId, setDragId] = useState(null)
   const [overCol, setOverCol] = useState(null)
-  const cols = STAGES.filter(s => ['applied','screen','iv','final','offer','reject'].includes(s.k))
+  const cols = STAGES.filter(s => ['new','applied','screen','iv','final','offer','accepted'].includes(s.k))
   return (
     <div className="kan-wrap">
       {cols.map(g => {

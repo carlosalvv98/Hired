@@ -4,6 +4,7 @@ import Sidebar from './Sidebar'
 import Drawer from './Drawer'
 import CmdK from './CmdK'
 import MobileLayout from './MobileLayout'
+import UpgradeModal from './UpgradeModal'
 import { useUI } from '../hooks/useUI'
 import { listApplications, listEmails } from '../lib/api'
 
@@ -18,7 +19,7 @@ const useIsMobile = () => {
 }
 
 export default function Layout() {
-  const { drawerId, cmdK, setCmdK, closeDrawer } = useUI()
+  const { drawerId, cmdK, setCmdK, closeDrawer, upgradeFeature, closeUpgrade } = useUI()
   const isMobile = useIsMobile()
   const [counts, setCounts] = useState({ '/tracker': 0, '/inbox': 0 })
 
@@ -43,6 +44,7 @@ export default function Layout() {
         </MobileLayout>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
+        {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
       </>
     )
   }
@@ -56,6 +58,7 @@ export default function Layout() {
         </div>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
+        {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
       </div>
     </div>
   )

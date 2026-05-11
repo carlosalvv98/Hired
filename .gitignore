@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.envlocal
+
+# Supabase CLI scratch state
+supabase/.temp/
+
