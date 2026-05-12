@@ -4,7 +4,7 @@ import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
-import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore } from 'lucide-react'
+import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2 } from 'lucide-react'
 import Logo from './Logo'
 import StatusPill from './StatusPill'
 import { STAGES, STAGE_LABEL, STAGE_ORDER } from '../lib/stages'
@@ -13,8 +13,11 @@ import {
   getApplication, listEvents, listSteps, upsertSteps, setStepStatus,
   setStage, listEmailsForApp, listAppContacts, updateApplication,
   addStep as apiAddStep, deleteStep as apiDeleteStep, reorderSteps,
-  listResumes, deleteApplication,
+  listResumes, deleteApplication, createResume, uploadResumeFile,
 } from '../lib/api'
+import { useAuth } from '../hooks/useAuth'
+import { parseResumeFromFile } from '../lib/agents/resumeImporter'
+import { trackUsage } from '../lib/ai'
 import toast from 'react-hot-toast'
 
 const TABS = [
@@ -706,10 +709,64 @@ function escapeHtml(s) {
 }
 
 function ResumePicker({ currentId, onPick, onClose, onCreateNew }) {
+  const { user } = useAuth()
+  const { openUpgrade } = useUI()
+  const { allowed: importAllowed, refresh: refreshImportLimit } = useLimit('resume_imports')
   const [list, setList] = useState(null)
+  const [uploading, setUploading] = useState(false)
+  const fileRef = useRef(null)
+
   useEffect(() => {
     listResumes().then(setList).catch(() => setList([]))
   }, [])
+
+  // Upload + (for PDFs) AI-parse, then auto-attach the new resume to the
+  // current application. Mirrors the import flow on the Resumes page but
+  // skips the navigation step.
+  const onUpload = async (file) => {
+    if (!file || uploading) return
+    setUploading(true)
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+    try {
+      const stub = await createResume({
+        name: file.name.replace(/\.(pdf|docx?|md|txt)$/i, '') || 'Imported resume',
+        version: `v${(list?.length || 0) + 1}`,
+        content_md: '',
+        source: isPdf ? 'ai_imported' : 'upload',
+        file_name: file.name,
+        file_size_bytes: file.size,
+        file_mime: file.type || null,
+      }, user.id)
+
+      const fileMeta = await uploadResumeFile(file, user.id, stub.id)
+      // Persist file path on the resume row.
+      const { updateResume } = await import('../lib/api')
+      await updateResume(stub.id, { file_url: fileMeta.path, file_mime: fileMeta.mime })
+
+      if (isPdf && guardLimit({ allowed: importAllowed, feature: 'resume_imports', openUpgrade })) {
+        toast.loading('Parsing your resume with AI…', { id: 'drawer-res-import' })
+        try {
+          const { markdown, _usage } = await parseResumeFromFile(fileMeta.path)
+          await updateResume(stub.id, { content_md: markdown })
+          if (user?.id) {
+            await trackUsage(user.id, 'resume_imports', _usage.model, _usage.inputTokens, _usage.outputTokens)
+            refreshImportLimit()
+          }
+          toast.success('Resume imported', { id: 'drawer-res-import' })
+        } catch (err) {
+          toast.error(err.message || 'AI parse failed', { id: 'drawer-res-import' })
+        }
+      } else if (!isPdf) {
+        toast.success('Resume uploaded')
+      }
+      onPick(stub.id)
+    } catch (err) {
+      toast.error(err.message || 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
+
   return (
     <div className="modal-scrim" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 460 }}>
@@ -745,9 +802,21 @@ function ResumePicker({ currentId, onPick, onClose, onCreateNew }) {
               ))}
             </div>
           )}
-          <button className="btn ghost lg" onClick={onCreateNew} style={{ marginTop: 8 }}>
-            <Plus size={13} />Create a new resume
-          </button>
+          <input
+            ref={fileRef} type="file"
+            accept=".pdf,.docx,.doc,.md,.txt"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = '' }}
+            style={{ display: 'none' }}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+            <button className="btn ghost lg" onClick={() => fileRef.current?.click()} disabled={uploading}>
+              {uploading ? <Loader2 size={13} className="spin" /> : <Upload size={13} />}
+              {uploading ? 'Uploading…' : 'Upload file'}
+            </button>
+            <button className="btn ghost lg" onClick={onCreateNew}>
+              <Plus size={13} />New from scratch
+            </button>
+          </div>
         </div>
       </div>
     </div>

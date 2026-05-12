@@ -744,22 +744,46 @@ a { color: inherit; text-decoration: none; }
 .ai-parsed-banner b { color: var(--ink); font-weight: 600; }
 
 /* ───── Resume ───── */
-.resume-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+/* Aim for 4–5 cards per row on a typical 1440px tracker layout. The
+   auto-fill keyword lets the grid pack as many cards as fit while keeping
+   each one comfortably readable. */
+.resume-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .resume-card {
+  position: relative;
   background: #fff;
   border: 1px solid var(--line);
   border-radius: var(--r-card);
-  overflow: hidden;
+  /* Overflow: visible so the per-card three-dot menu can pop outside the
+     card bounds. The inner preview keeps its own overflow:hidden. */
+  overflow: visible;
   cursor: pointer;
-  transition: box-shadow 120ms var(--ease), transform 120ms var(--ease);
+  transition: box-shadow 120ms var(--ease), transform 120ms var(--ease), border-color 120ms var(--ease);
 }
 .resume-card:hover { box-shadow: var(--shadow-card); transform: translateY(-1px); }
-.resume-card .preview { height: 200px; background: var(--bg); position: relative; border-bottom: 1px solid var(--line); overflow: hidden; }
-.resume-card .meta { padding: 14px 16px; }
-.resume-card .meta h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
-.resume-card .meta .sub { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; font-family: var(--mono); }
+.resume-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.resume-card .preview {
+  height: 150px; background: var(--bg); position: relative;
+  border-bottom: 1px solid var(--line); overflow: hidden;
+  border-radius: var(--r-card) var(--r-card) 0 0;
+}
+.resume-card .meta { padding: 10px 12px; }
+.resume-card .meta h4 { margin: 0; font-size: 13px; font-weight: 600; min-width: 0; }
+.resume-card .meta .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; font-family: var(--mono); }
 .resume-card .stats { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--ink-2); }
 .resume-card .stats b { color: var(--ink); font-weight: 600; font-family: var(--mono); }
+
+/* Card-corner checkbox — hidden until hover (or when at least one
+   card is already selected, so the user can extend the selection). */
+.resume-card-check {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  width: 22px; height: 22px;
+  background: rgba(255,255,255,0.92); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  opacity: 0; transition: opacity 100ms var(--ease);
+}
+.resume-card:hover .resume-card-check,
+.resume-card.selected .resume-card-check { opacity: 1; }
 .resume-card.create {
   background: var(--accent-soft);
   border: 1px dashed var(--accent-2);
@@ -961,6 +985,34 @@ a { color: inherit; text-decoration: none; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.22); }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* Autosave indicator in the resume-editor page actions strip. */
+.autosave-indicator {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--ink-3); padding-left: 4px;
+  min-width: 110px;
+}
+.autosave-indicator[data-state="saving"] { color: var(--accent); }
+.autosave-indicator[data-state="saved"]  { color: var(--good); }
+
+/* ── Resumes import drop overlay ─────────────────────────────────────── */
+.content.drag-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -10px;
+  background: var(--accent-soft);
+}
+.resumes-drop-overlay {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(79, 70, 229, 0.06);
+  pointer-events: none;
+}
+.resumes-drop-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  background: #fff; border: 1px dashed var(--accent);
+  border-radius: 12px; padding: 28px 36px;
+  color: var(--accent-ink); font-weight: 600; font-size: 14px;
+}
+
 /* ── Page actions strip (sub-toolbar below AppBar) ───────────────────── */
 .page-actions {
   display: flex; align-items: center; gap: 8px;
@@ -1064,24 +1116,36 @@ a { color: inherit; text-decoration: none; }
   font-size: 12px; color: var(--ink-2); line-height: 1.5;
 }
 
-/* ── Confirm toast (replaces window.confirm) ─────────────────────────── */
-.confirm-toast {
-  display: flex; flex-direction: column; gap: 10px;
-  min-width: 280px; max-width: 380px;
-  padding: 12px 14px;
+/* ── Confirm dialog (replaces window.confirm) — centered modal ────────── */
+.confirm-scrim {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 20, 40, 0);
+  opacity: 0; transition: opacity 140ms var(--ease), background 140ms var(--ease);
+}
+.confirm-scrim.in  { opacity: 1; background: rgba(20, 20, 40, 0.32); }
+.confirm-scrim.out { opacity: 0; }
+.confirm-dialog {
   background: #fff; border: 1px solid var(--line);
-  border-left: 3px solid var(--bad);
-  border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(20, 20, 50, 0.10);
+  border-radius: 12px; padding: 22px 24px 18px;
+  box-shadow: 0 20px 60px rgba(20, 20, 50, 0.18);
+  width: min(420px, calc(100vw - 32px));
   font-family: var(--sans);
+  transform: translateY(8px) scale(0.98); opacity: 0;
+  transition: transform 160ms var(--ease), opacity 160ms var(--ease);
 }
-.confirm-toast.in  { animation: limit-toast-in 180ms var(--ease); }
-.confirm-toast.out { animation: limit-toast-out 140ms var(--ease) forwards; }
-.confirm-toast-msg {
-  font-size: 12.5px; line-height: 1.4; color: var(--ink);
+.confirm-dialog.in  { transform: none; opacity: 1; }
+.confirm-dialog.out { transform: translateY(8px) scale(0.98); opacity: 0; }
+.confirm-dialog-title {
+  margin: 0 0 6px; font-size: 15px; font-weight: 700;
+  letter-spacing: -0.01em; color: var(--ink);
 }
-.confirm-toast-actions {
-  display: flex; gap: 6px; justify-content: flex-end;
+.confirm-dialog-msg {
+  margin: 0 0 18px; font-size: 13px; line-height: 1.5;
+  color: var(--ink-2);
+}
+.confirm-dialog-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
 }
 
 /* ── Limit toast (react-hot-toast custom render) ─────────────────────── */

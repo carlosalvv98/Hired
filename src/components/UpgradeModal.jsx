@@ -21,6 +21,7 @@ const FEATURE_ROWS = [
   { feature: 'ask_ai_per_day',   label: 'Ask AI questions',     reset: 'daily' },
   { feature: 'email_replies',    label: 'Email reply drafts',   reset: 'total' },
   { feature: 'resume_tailoring', label: 'Resume tailoring',     reset: 'total' },
+  { feature: 'resume_imports',   label: 'AI resume imports',    reset: 'total' },
   { feature: 'resume_versions',  label: 'Resume versions',      reset: 'active' },
   { feature: 'nudges',           label: 'Active nudges',        reset: 'active' },
   { feature: 'community_intel',  label: 'Community intel',      reset: 'monthly' },

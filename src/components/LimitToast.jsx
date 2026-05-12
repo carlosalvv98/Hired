@@ -9,6 +9,7 @@ export const FEATURE_LABELS = {
   email_replies:     { unit: 'reply drafts', period: '' },
   ats_scores:        { unit: 'ATS scores', period: 'this month' },
   resume_tailoring:  { unit: 'resume tailorings', period: '' },
+  resume_imports:    { unit: 'AI resume imports', period: '' },
   interview_prep:    { unit: 'interview prep sessions', period: 'this month' },
   ask_ai_per_day:    { unit: 'Ask AI questions', period: 'today' },
   community_intel:   { unit: 'community intel views', period: 'this month' },

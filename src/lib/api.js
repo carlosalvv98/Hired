@@ -252,6 +252,72 @@ export async function createResume(payload, userId) {
   return data;
 }
 
+// Clone an existing resume so the user can iterate from a known-good
+// version without overwriting the original. The new row gets a bumped
+// version label and an indication of provenance.
+export async function duplicateResume(id, userId) {
+  const src = await getResume(id);
+  const newName = `${src.name} (copy)`;
+  return createResume({
+    name: newName,
+    version: src.version ? `${src.version}-copy` : 'copy',
+    content_md: src.content_md,
+    source: 'duplicate',
+  }, userId);
+}
+
+// Upload a resume file to the per-user folder in the `resumes` Storage
+// bucket. Path convention is `<user_id>/<resume_id>.<ext>` so the RLS
+// policy on storage.objects (which inspects the first path segment) lets
+// the owner — and only the owner — read it.
+export async function uploadResumeFile(file, userId, resumeId) {
+  if (!file) throw new Error('No file provided');
+  const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+  const path = `${userId}/${resumeId}.${ext}`;
+  const { error } = await supabase.storage
+    .from('resumes').upload(path, file, { upsert: true, contentType: file.type });
+  if (error) throw error;
+  return { path, ext, mime: file.type, size: file.size, name: file.name };
+}
+
+// Generate a short-lived signed URL for downloading a resume file. The
+// bucket is private so direct public URLs don't work.
+export async function getResumeFileSignedUrl(path, expiresInSec = 300) {
+  if (!path) return null;
+  const { data, error } = await supabase.storage
+    .from('resumes').createSignedUrl(path, expiresInSec);
+  if (error) throw error;
+  return data?.signedUrl || null;
+}
+
+export async function deleteResumeFile(path) {
+  if (!path) return;
+  await supabase.storage.from('resumes').remove([path]);
+}
+
+// Read a file from Storage and return it as a base64 string. Used when
+// we send a PDF to Claude for AI parsing — Anthropic's `document` content
+// block expects base64-encoded source data.
+export async function downloadResumeFileBase64(path) {
+  const { data, error } = await supabase.storage.from('resumes').download(path);
+  if (error) throw error;
+  return await blobToBase64(data);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const r = fr.result;
+      // result is `data:<mime>;base64,<payload>` — strip the prefix.
+      const comma = typeof r === 'string' ? r.indexOf(',') : -1;
+      resolve(typeof r === 'string' && comma >= 0 ? r.slice(comma + 1) : '');
+    };
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
 export async function updateResume(id, patch) {
   const { data, error } = await supabase.from('resumes').update(patch).eq('id', id).select().single();
   if (error) throw error;

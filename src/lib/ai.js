@@ -19,7 +19,10 @@ import { supabase } from './supabase'
 
 export const MODELS = {
   fast: 'claude-haiku-4-5-20251001',
-  smart: 'claude-sonnet-4-20250514',
+  // Sonnet 4.6 — used for higher-fidelity work (resume parsing from PDF,
+  // tailoring, prep generation). The old `claude-sonnet-4-20250514` id
+  // 404'd from the proxy.
+  smart: 'claude-sonnet-4-6',
 }
 
 // -1 = unlimited, 0 = locked
@@ -30,6 +33,7 @@ export const TIER_LIMITS = {
     email_replies: 3,       // lifetime
     ats_scores: 3,          // monthly
     resume_tailoring: 1,    // lifetime
+    resume_imports: 1,      // lifetime — AI parsing of an uploaded resume PDF
     resume_versions: 3,     // total active
     interview_prep: 2,      // monthly
     community_intel: 0,     // locked
@@ -44,6 +48,7 @@ export const TIER_LIMITS = {
     email_replies: 20,
     ats_scores: -1,
     resume_tailoring: 5,
+    resume_imports: 10,
     resume_versions: 10,
     interview_prep: 10,
     community_intel: 0,
@@ -58,6 +63,7 @@ export const TIER_LIMITS = {
     email_replies: -1,
     ats_scores: -1,
     resume_tailoring: -1,
+    resume_imports: -1,
     resume_versions: -1,
     interview_prep: -1,
     community_intel: -1,
@@ -77,6 +83,7 @@ const PERIOD_BY_FEATURE = {
   ask_ai_per_day: 'day',
   email_replies: 'all',
   resume_tailoring: 'all',
+  resume_imports: 'all',
   // resume_versions / nudges are "total active" — caller computes those
   // from the resumes / ai_nudges tables, not from ai_usage history.
 }

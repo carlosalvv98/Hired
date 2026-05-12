@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Sparkles, Download, Check, RefreshCw, ArrowLeft } from 'lucide-react'
+import { Sparkles, Check, RefreshCw, ArrowLeft } from 'lucide-react'
 import AppBar, { PageActions } from '../components/AppBar'
-import { getResume, updateResume, listApplications, createResumeScore, listResumeScores } from '../lib/api'
+import {
+  getResume, updateResume, listApplications, createResumeScore, listResumeScores,
+  createResume,
+} from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import toast from 'react-hot-toast'
+
+const STARTER_NAME = 'Untitled resume'
+const STARTER_CONTENT = ''
 
 // Lightweight client-side ATS heuristic — counts unique keyword overlap
 // between the JD and the resume. Not a substitute for a real model, but it
@@ -25,39 +31,101 @@ function score(jdText, resumeText) {
 }
 
 export default function ResumeEditor() {
-  const { id } = useParams()
+  const { id: routeId } = useParams()
   const nav = useNavigate()
   const { user } = useAuth()
   const { openUpgrade } = useUI()
   const { allowed: atsAllowed, refresh: refreshAts } = useLimit('ats_scores')
-  const [resume, setResume] = useState(null)
-  const [content, setContent] = useState('')
-  const [name, setName] = useState('')
+
+  // `routeId === 'new'` is the draft state. We hold a local copy of the
+  // resume in memory and don't insert a DB row until the user actually
+  // edits something — clicking "New" alone shouldn't litter the library.
+  const isDraft = routeId === 'new'
+  const [actualId, setActualId] = useState(isDraft ? null : routeId)
+  const [resume, setResume] = useState(isDraft ? { id: null, name: STARTER_NAME, content_md: STARTER_CONTENT } : null)
+  const [content, setContent] = useState(STARTER_CONTENT)
+  const [name, setName] = useState(STARTER_NAME)
   const [apps, setApps] = useState([])
   const [scoreAppId, setScoreAppId] = useState('')
   const [scores, setScores] = useState([])
   const [busy, setBusy] = useState(false)
+  // Tracks whether the user has actually edited anything yet. Autosave
+  // and the initial DB insert both gate on this — clicking "New" without
+  // typing should be a no-op.
+  const [dirty, setDirty] = useState(false)
+  const [savingState, setSavingState] = useState('idle') // 'idle' | 'saving' | 'saved'
 
   const load = async () => {
     try {
-      const [r, a, s] = await Promise.all([getResume(id), listApplications(), listResumeScores(id)])
+      const [r, a, s] = await Promise.all([
+        getResume(routeId), listApplications(), listResumeScores(routeId),
+      ])
       setResume(r); setContent(r.content_md || ''); setName(r.name)
       setApps(a); setScores(s)
+      setActualId(routeId)
     } catch { toast.error('Could not load resume'); nav('/resumes') }
   }
-  useEffect(() => { load() }, [id])
 
-  const onSave = async () => {
+  useEffect(() => {
+    if (isDraft) {
+      // Still load the applications list so ATS scoring works once saved.
+      listApplications().then(setApps).catch(() => {})
+      return
+    }
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeId])
+
+  // Persist the current draft. Creates the DB row on first save, then
+  // updates it from there. Called both from the manual Save button and
+  // the debounced autosave below.
+  const persist = async () => {
+    if (!dirty) return
     setBusy(true)
+    setSavingState('saving')
     try {
-      await updateResume(id, { content_md: content, name })
-      toast.success('Saved')
-    } catch { toast.error('Save failed') }
-    finally { setBusy(false) }
+      if (!actualId) {
+        const r = await createResume({
+          name: name || STARTER_NAME,
+          version: 'v1',
+          content_md: content,
+          source: 'manual',
+        }, user.id)
+        setActualId(r.id)
+        setResume(r)
+        // Replace the URL so refresh / back-button hit the real row.
+        nav(`/resumes/${r.id}`, { replace: true })
+      } else {
+        await updateResume(actualId, { content_md: content, name })
+      }
+      setSavingState('saved')
+      setDirty(false)
+      // Drop the "Saved" indicator after a beat.
+      setTimeout(() => setSavingState(s => s === 'saved' ? 'idle' : s), 1500)
+    } catch {
+      toast.error('Save failed')
+      setSavingState('idle')
+    } finally { setBusy(false) }
   }
+
+  // Debounced autosave — fires ~900ms after the user stops typing. Only
+  // runs when `dirty`, so navigation + initial mount don't trigger writes.
+  const autosaveTimer = useRef(null)
+  useEffect(() => {
+    if (!dirty) return
+    clearTimeout(autosaveTimer.current)
+    autosaveTimer.current = setTimeout(() => { persist() }, 900)
+    return () => clearTimeout(autosaveTimer.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, name, dirty])
+
+  const onChangeContent = (v) => { setContent(v); setDirty(true) }
+  const onChangeName = (v) => { setName(v); setDirty(true) }
+  const onSave = persist
 
   const onScore = async () => {
     if (!scoreAppId) { toast('Pick an application to score against'); return }
+    if (!actualId) { toast('Save the resume first'); return }
     if (!guardLimit({ allowed: atsAllowed, feature: 'ats_scores', openUpgrade })) return
     const app = apps.find(a => a.id === scoreAppId)
     if (!app) return
@@ -65,7 +133,7 @@ export default function ResumeEditor() {
     const res = score(jd, content)
     try {
       await createResumeScore({
-        resume_id: id, application_id: scoreAppId,
+        resume_id: actualId, application_id: scoreAppId,
         score: res.score, breakdown_json: res, model: 'client-heuristic-v1',
       })
       // Record against the ats_scores quota. Heuristic scorer doesn't burn
@@ -75,21 +143,13 @@ export default function ResumeEditor() {
         await trackUsage(user.id, 'ats_scores', 'client-heuristic-v1', 0, 0, scoreAppId)
         refreshAts()
       }
-      const next = await listResumeScores(id)
+      const next = await listResumeScores(actualId)
       setScores(next)
       toast.success(`Score: ${res.score}`)
     } catch { toast.error('Could not save score') }
   }
 
   const latestScore = scores[0]
-
-  const onExport = () => {
-    const blob = new Blob([content], { type: 'text/markdown' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = `${name || 'resume'}.md`
-    a.click(); URL.revokeObjectURL(url)
-  }
 
   if (!resume) return (
     <>
@@ -101,18 +161,28 @@ export default function ResumeEditor() {
   return (
     <>
       <AppBar title={name || 'Resume'} crumbs="resumes / editor" />
-      <PageActions right={
-        <>
-          <button className="btn ghost tiny" onClick={() => nav('/resumes')}><ArrowLeft size={13} />Library</button>
-          <button className="btn ghost tiny" onClick={onExport}><Download size={13} />Export .md</button>
-          <button className="btn primary tiny" onClick={onSave} disabled={busy}><Check size={13} />{busy ? 'Saving…' : 'Save'}</button>
-        </>
-      } />
+      <PageActions
+        left={
+          <span className="autosave-indicator" data-state={savingState}>
+            {savingState === 'saving' && 'Saving…'}
+            {savingState === 'saved'  && 'Saved'}
+            {savingState === 'idle'   && (dirty ? 'Unsaved changes' : '')}
+          </span>
+        }
+        right={
+          <>
+            <button className="btn ghost tiny" onClick={() => nav('/resumes')}><ArrowLeft size={13} />Library</button>
+            <button className="btn primary tiny" onClick={onSave} disabled={busy || !dirty}>
+              <Check size={13} />{busy ? 'Saving…' : 'Save'}
+            </button>
+          </>
+        }
+      />
       <div className="editor-wrap">
         <div className="editor-left">
           <h4>Name</h4>
           <input className="field" style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 6, fontSize: 13 }}
-            value={name} onChange={e => setName(e.target.value)} />
+            value={name} onChange={e => onChangeName(e.target.value)} />
 
           <h4>ATS Score</h4>
           <div className="card" style={{ padding: 12 }}>
@@ -160,7 +230,7 @@ export default function ResumeEditor() {
           <div className="resume-paper">
             <textarea
               value={content}
-              onChange={e => setContent(e.target.value)}
+              onChange={e => onChangeContent(e.target.value)}
               spellCheck={false}
               style={{
                 width: '100%', minHeight: 600, border: 'none', outline: 'none',

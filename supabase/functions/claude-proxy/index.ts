@@ -191,15 +191,35 @@ Deno.serve(async (req) => {
 
   const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt : null
   let userMessage = typeof body.userMessage === 'string' ? body.userMessage : null
-  const messages = Array.isArray(body.messages) ? body.messages : null
+  let messages = Array.isArray(body.messages) ? body.messages : null
   const fetchUrl = typeof body.fetchUrl === 'string' ? body.fetchUrl : null
+  // PDF input — base64 + mime, used for the AI resume importer. Anthropic's
+  // /v1/messages accepts a `document` content block with base64 PDFs (no
+  // extra extraction libs needed on our side).
+  const pdfBase64 = typeof body.pdfBase64 === 'string' ? body.pdfBase64 : null
+  const pdfMime = typeof body.pdfMime === 'string' ? body.pdfMime : 'application/pdf'
   const model = typeof body.model === 'string' ? body.model : null
   const maxTokens = Number.isFinite(body.max_tokens) ? body.max_tokens : 2000
 
   if (!systemPrompt) return json({ error: 'systemPrompt is required' }, 400)
   if (!model)        return json({ error: 'model is required' }, 400)
-  if (!messages && !userMessage && !fetchUrl) {
-    return json({ error: 'Provide `userMessage`, `messages`, or `fetchUrl`' }, 400)
+  if (!messages && !userMessage && !fetchUrl && !pdfBase64) {
+    return json({ error: 'Provide `userMessage`, `messages`, `fetchUrl`, or `pdfBase64`' }, 400)
+  }
+
+  // ── PDF input path (resume importer) ────────────────────────────────
+  // Build a single user message containing a `document` block + the
+  // accompanying text instruction. We do this before the generic payload
+  // assembly below.
+  if (pdfBase64 && !messages) {
+    const userInstruction = userMessage || 'Parse the attached resume.'
+    messages = [{
+      role: 'user',
+      content: [
+        { type: 'document', source: { type: 'base64', media_type: pdfMime, data: pdfBase64 } },
+        { type: 'text', text: userInstruction },
+      ],
+    }]
   }
 
   // ── Optional: server-side URL fetch (job-URL parser path) ────────────
