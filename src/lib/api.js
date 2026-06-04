@@ -262,6 +262,7 @@ export async function duplicateResume(id, userId) {
     name: newName,
     version: src.version ? `${src.version}-copy` : 'copy',
     content_md: src.content_md,
+    content_blocks: src.content_blocks,
     source: 'duplicate',
   }, userId);
 }

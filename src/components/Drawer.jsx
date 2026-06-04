@@ -746,8 +746,8 @@ function ResumePicker({ currentId, onPick, onClose, onCreateNew }) {
       if (isPdf && guardLimit({ allowed: importAllowed, feature: 'resume_imports', openUpgrade })) {
         toast.loading('Parsing your resume with AI…', { id: 'drawer-res-import' })
         try {
-          const { markdown, _usage } = await parseResumeFromFile(fileMeta.path)
-          await updateResume(stub.id, { content_md: markdown })
+          const { blocks, name: derivedName, _usage } = await parseResumeFromFile(fileMeta.path)
+          await updateResume(stub.id, { content_blocks: blocks, name: derivedName || stub.name })
           if (user?.id) {
             await trackUsage(user.id, 'resume_imports', _usage.model, _usage.inputTokens, _usage.outputTokens)
             refreshImportLimit()

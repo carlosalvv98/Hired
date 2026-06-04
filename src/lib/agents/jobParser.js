@@ -9,6 +9,26 @@
  */
 import { MODELS, callProxy, extractJson } from '../ai'
 
+// LinkedIn aggressively blocks scrapers (Firecrawl included), so when a
+// LinkedIn URL fails we point the user somewhere that actually works
+// instead of implying the page-fetch is broken.
+function isLinkedInUrl(url) {
+  try {
+    return /(^|\.)linkedin\.com$/i.test(new URL(url).hostname)
+  } catch {
+    return /linkedin\.com/i.test(String(url))
+  }
+}
+
+// Friendly, actionable message for when the page-fetch (Firecrawl) returns
+// nothing or errors. AddJobModal toasts this and falls through to the manual
+// entry form, so the user is never stranded.
+function fetchFailureMessage(url) {
+  return isLinkedInUrl(url)
+    ? 'LinkedIn blocks external tools. Try the direct company careers page instead, or add the job manually.'
+    : "Couldn't read that page. Try a direct company careers page link, or add the job manually."
+}
+
 const SYSTEM_PROMPT = `You are a job listing parser for a job application tracking app. Extract structured information from job posting text. Return ONLY a valid JSON object with NO markdown, no backticks, no explanation — just raw JSON.
 
 Required fields:
@@ -44,9 +64,11 @@ export async function parseJobFromUrl(url) {
       model: MODELS.fast,
       max_tokens: 2000,
     })
-  } catch (err) {
-    // Edge function already returns user-friendly messages — surface them.
-    throw new Error(err.message || 'Could not parse that URL.')
+  } catch {
+    // The page-fetch (Firecrawl) failed or returned nothing. Don't surface a
+    // raw/generic error — give an actionable message and let AddJobModal fall
+    // through to manual entry.
+    throw new Error(fetchFailureMessage(url))
   }
 
   const text = data?.content?.[0]?.text
@@ -64,7 +86,7 @@ export async function parseJobFromUrl(url) {
     throw new Error('AI returned an unexpected response shape.')
   }
 
-  // The edge function uses Jina Reader as a fallback for JS-rendered pages,
+  // The edge function uses Firecrawl as a fallback for JS-rendered pages,
   // so an empty result here means the URL itself was bad or behind auth.
   const hasCompany = parsed.company && String(parsed.company).trim().length > 0
   const hasRole = parsed.role_title && String(parsed.role_title).trim().length > 0

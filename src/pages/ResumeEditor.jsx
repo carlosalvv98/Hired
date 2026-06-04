@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Sparkles, Check, RefreshCw, ArrowLeft } from 'lucide-react'
+import { Sparkles, Check, ArrowLeft } from 'lucide-react'
 import AppBar, { PageActions } from '../components/AppBar'
 import {
   getResume, updateResume, listApplications, createResumeScore, listResumeScores,
@@ -10,14 +10,19 @@ import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
+import {
+  starterBlocks, markdownToBlocks, blocksToPlainText,
+} from '../lib/resumeBlocks'
+import BlockList from '../components/resume/BlockList'
+import BlockOutline from '../components/resume/BlockOutline'
+import RichTextToolbar from '../components/resume/RichTextToolbar'
 import toast from 'react-hot-toast'
 
 const STARTER_NAME = 'Untitled resume'
-const STARTER_CONTENT = ''
 
 // Lightweight client-side ATS heuristic — counts unique keyword overlap
-// between the JD and the resume. Not a substitute for a real model, but it
-// gives a real, deterministic score the user can iterate against.
+// between the JD and the resume's plain-text content. Same as before;
+// only the resume input changed (blocks → plain text via helper).
 const STOP = new Set(['the','a','an','and','or','of','to','in','for','with','on','at','by','as','is','are','was','were','be','been','have','has','had','this','that','it','from','your','you','our','we','us','will'])
 function score(jdText, resumeText) {
   const norm = (t) => (t || '').toLowerCase().replace(/[^\w\s+#./-]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w))
@@ -28,6 +33,15 @@ function score(jdText, resumeText) {
   const missing = [...jd].filter(w => !rs.has(w)).slice(0, 12)
   const s = Math.min(100, Math.round((matched.length / jd.size) * 130))
   return { score: s, matched: matched.slice(0, 20), missing }
+}
+
+// Load blocks from a DB row. If `content_blocks` is set, use it directly.
+// Otherwise fall back to parsing the legacy `content_md` text so old
+// resumes get migrated on first open without data loss.
+function loadBlocksFromRow(row) {
+  if (Array.isArray(row?.content_blocks) && row.content_blocks.length) return row.content_blocks
+  if (typeof row?.content_md === 'string' && row.content_md.trim()) return markdownToBlocks(row.content_md)
+  return starterBlocks()
 }
 
 export default function ResumeEditor() {
@@ -42,16 +56,13 @@ export default function ResumeEditor() {
   // edits something — clicking "New" alone shouldn't litter the library.
   const isDraft = routeId === 'new'
   const [actualId, setActualId] = useState(isDraft ? null : routeId)
-  const [resume, setResume] = useState(isDraft ? { id: null, name: STARTER_NAME, content_md: STARTER_CONTENT } : null)
-  const [content, setContent] = useState(STARTER_CONTENT)
+  const [resume, setResume] = useState(isDraft ? { id: null, name: STARTER_NAME, content_blocks: starterBlocks() } : null)
+  const [blocks, setBlocks] = useState(isDraft ? starterBlocks() : [])
   const [name, setName] = useState(STARTER_NAME)
   const [apps, setApps] = useState([])
   const [scoreAppId, setScoreAppId] = useState('')
   const [scores, setScores] = useState([])
   const [busy, setBusy] = useState(false)
-  // Tracks whether the user has actually edited anything yet. Autosave
-  // and the initial DB insert both gate on this — clicking "New" without
-  // typing should be a no-op.
   const [dirty, setDirty] = useState(false)
   const [savingState, setSavingState] = useState('idle') // 'idle' | 'saving' | 'saved'
 
@@ -60,7 +71,9 @@ export default function ResumeEditor() {
       const [r, a, s] = await Promise.all([
         getResume(routeId), listApplications(), listResumeScores(routeId),
       ])
-      setResume(r); setContent(r.content_md || ''); setName(r.name)
+      setResume(r)
+      setBlocks(loadBlocksFromRow(r))
+      setName(r.name)
       setApps(a); setScores(s)
       setActualId(routeId)
     } catch { toast.error('Could not load resume'); nav('/resumes') }
@@ -68,7 +81,6 @@ export default function ResumeEditor() {
 
   useEffect(() => {
     if (isDraft) {
-      // Still load the applications list so ATS scoring works once saved.
       listApplications().then(setApps).catch(() => {})
       return
     }
@@ -76,9 +88,9 @@ export default function ResumeEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeId])
 
-  // Persist the current draft. Creates the DB row on first save, then
-  // updates it from there. Called both from the manual Save button and
-  // the debounced autosave below.
+  // Persist current state. Creates the DB row on first save (draft mode),
+  // then updates it. Called from the autosave debounce + the manual Save.
+  const autosaveTimer = useRef(null)
   const persist = async () => {
     if (!dirty) return
     setBusy(true)
@@ -88,19 +100,17 @@ export default function ResumeEditor() {
         const r = await createResume({
           name: name || STARTER_NAME,
           version: 'v1',
-          content_md: content,
+          content_blocks: blocks,
           source: 'manual',
         }, user.id)
         setActualId(r.id)
         setResume(r)
-        // Replace the URL so refresh / back-button hit the real row.
         nav(`/resumes/${r.id}`, { replace: true })
       } else {
-        await updateResume(actualId, { content_md: content, name })
+        await updateResume(actualId, { content_blocks: blocks, name })
       }
       setSavingState('saved')
       setDirty(false)
-      // Drop the "Saved" indicator after a beat.
       setTimeout(() => setSavingState(s => s === 'saved' ? 'idle' : s), 1500)
     } catch {
       toast.error('Save failed')
@@ -108,20 +118,19 @@ export default function ResumeEditor() {
     } finally { setBusy(false) }
   }
 
-  // Debounced autosave — fires ~900ms after the user stops typing. Only
-  // runs when `dirty`, so navigation + initial mount don't trigger writes.
-  const autosaveTimer = useRef(null)
   useEffect(() => {
     if (!dirty) return
     clearTimeout(autosaveTimer.current)
     autosaveTimer.current = setTimeout(() => { persist() }, 900)
     return () => clearTimeout(autosaveTimer.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, name, dirty])
+  }, [blocks, name, dirty])
 
-  const onChangeContent = (v) => { setContent(v); setDirty(true) }
+  const onChangeBlocks = (next) => { setBlocks(next); setDirty(true) }
   const onChangeName = (v) => { setName(v); setDirty(true) }
   const onSave = persist
+
+  const resumePlainText = useMemo(() => blocksToPlainText(blocks), [blocks])
 
   const onScore = async () => {
     if (!scoreAppId) { toast('Pick an application to score against'); return }
@@ -130,14 +139,12 @@ export default function ResumeEditor() {
     const app = apps.find(a => a.id === scoreAppId)
     if (!app) return
     const jd = [app.role_title, app.company?.name, app.jd_text || '', app.notes_md || ''].filter(Boolean).join(' ')
-    const res = score(jd, content)
+    const res = score(jd, resumePlainText)
     try {
       await createResumeScore({
         resume_id: actualId, application_id: scoreAppId,
         score: res.score, breakdown_json: res, model: 'client-heuristic-v1',
       })
-      // Record against the ats_scores quota. Heuristic scorer doesn't burn
-      // tokens, but the count itself is what the tier limit gates on.
       if (user?.id) {
         const { trackUsage } = await import('../lib/ai')
         await trackUsage(user.id, 'ats_scores', 'client-heuristic-v1', 0, 0, scoreAppId)
@@ -184,6 +191,9 @@ export default function ResumeEditor() {
           <input className="field" style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 6, fontSize: 13 }}
             value={name} onChange={e => onChangeName(e.target.value)} />
 
+          <h4>Sections</h4>
+          <BlockOutline blocks={blocks} onChange={onChangeBlocks} />
+
           <h4>ATS Score</h4>
           <div className="card" style={{ padding: 12 }}>
             <select value={scoreAppId} onChange={e => setScoreAppId(e.target.value)} style={{ width: '100%', padding: 6, border: '1px solid var(--line)', borderRadius: 6, fontSize: 12, marginBottom: 8 }}>
@@ -227,17 +237,11 @@ export default function ResumeEditor() {
         </div>
 
         <div className="editor-right">
-          <div className="resume-paper">
-            <textarea
-              value={content}
-              onChange={e => onChangeContent(e.target.value)}
-              spellCheck={false}
-              style={{
-                width: '100%', minHeight: 600, border: 'none', outline: 'none',
-                resize: 'vertical', fontSize: 13, lineHeight: 1.7,
-                fontFamily: 'var(--mono)', color: 'var(--ink)', background: 'transparent',
-              }}
-            />
+          <div className="resume-toolbar-sticky">
+            <RichTextToolbar />
+          </div>
+          <div className="resume-paper resume-paper-blocks">
+            <BlockList blocks={blocks} onChange={onChangeBlocks} />
           </div>
         </div>
       </div>

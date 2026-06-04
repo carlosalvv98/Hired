@@ -72,35 +72,43 @@ async function tryDirectFetch(url: string): Promise<string> {
   }
 }
 
-// Jina Reader: free, no-key endpoint that runs headless Chrome server-side
-// and returns clean markdown. Handles Workday, LinkedIn, and other SPAs that
-// a plain `fetch()` cannot.
-async function tryJinaReader(url: string): Promise<string> {
+// Firecrawl: scrapes the page with a real headless browser and strong
+// anti-bot bypassing, returning clean markdown. Far more reliable than a
+// plain fetch (or the old Jina Reader) on Greenhouse, Lever, Workday, and
+// most company career pages. Requires the FIRECRAWL_API_KEY secret.
+async function tryFirecrawl(url: string): Promise<string> {
+  const apiKey = Deno.env.get('FIRECRAWL_API_KEY')
+  if (!apiKey) throw new Error('FIRECRAWL_API_KEY is not set')
+
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), 30_000)
   try {
-    const res = await fetch(`https://r.jina.ai/${url}`, {
-      headers: { 'X-Return-Format': 'markdown' },
+    const res = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ url, formats: ['markdown'] }),
       signal: controller.signal,
     })
-    if (!res.ok) throw new Error(`Jina Reader ${res.status}`)
-    return cleanJinaMarkdown((await res.text()).trim())
+    if (!res.ok) throw new Error(`Firecrawl ${res.status}`)
+    const body = await res.json()
+    // v1/scrape shape: { success: boolean, data: { markdown, metadata, ... } }
+    const markdown = body?.data?.markdown
+    if (typeof markdown !== 'string' || !markdown.trim()) {
+      throw new Error('Firecrawl returned no markdown')
+    }
+    return trimBoilerplate(markdown.trim())
   } finally {
     clearTimeout(t)
   }
 }
 
-// Jina output structure: metadata header → site navigation → job content →
-// cookie consent / "similar jobs" footer. We strip nav from the front and
-// footer junk from the back so the model sees mostly actual job content.
-function cleanJinaMarkdown(raw: string): string {
-  // Strip the metadata header ("Title:", "URL Source:", "Markdown Content:")
-  const marker = 'Markdown Content:'
-  const idx = raw.indexOf(marker)
-  if (idx !== -1) raw = raw.slice(idx + marker.length).trim()
-
-  // Cut off boilerplate that comes AFTER the real job content. Common
-  // end markers across job sites: cookie consent, related jobs, etc.
+// Cut off boilerplate that commonly comes AFTER the real job content
+// (cookie consent, "similar jobs", etc.) so the model sees mostly the
+// actual posting. Source-agnostic — works on any markdown.
+function trimBoilerplate(raw: string): string {
   const endMarkers: RegExp[] = [
     /^##\s*Cookies on this site/im,
     /^##\s*Get notified for similar jobs/im,
@@ -116,22 +124,7 @@ function cleanJinaMarkdown(raw: string): string {
     const m = re.exec(raw)
     if (m && m.index < cutAt) cutAt = m.index
   }
-  raw = raw.slice(0, cutAt).trim()
-
-  // Strip the leading navigation block by jumping to the deepest # heading
-  // we can find — the real job title is almost always the last/deepest h1.
-  // Fall back gracefully if there are no h1s.
-  const h1s: number[] = []
-  const h1Re = /^# .+$/gm
-  let m: RegExpExecArray | null
-  while ((m = h1Re.exec(raw)) !== null) h1s.push(m.index)
-  if (h1s.length >= 2) {
-    raw = raw.slice(h1s[h1s.length - 1]).trim()
-  } else if (h1s.length === 1 && h1s[0] > 400) {
-    raw = raw.slice(h1s[0]).trim()
-  }
-
-  return raw
+  return raw.slice(0, cutAt).trim()
 }
 
 // Heuristic: a JS-rendered SPA shell typically has very little text and/or
@@ -227,18 +220,17 @@ Deno.serve(async (req) => {
   // Strategy: try a plain HTTP GET first (fast, works for plain HTML pages
   // like Lever / Greenhouse / company career pages). If the result looks
   // like a JavaScript SPA shell — short or full of unfilled template
-  // placeholders — fall back to Jina Reader, which runs a real headless
-  // Chrome server-side and returns clean markdown. Jina is free for
-  // moderate volumes and doesn't require an API key.
+  // placeholders — fall back to Firecrawl, which scrapes with a real
+  // headless browser and strong anti-bot bypassing, returning clean markdown.
   if (fetchUrl) {
     let text: string | null = null
     try {
       text = await tryDirectFetch(fetchUrl)
-    } catch (_) { /* fall through to Jina */ }
+    } catch (_) { /* fall through to Firecrawl */ }
 
     if (!text || looksLikeSpaShell(text)) {
       try {
-        text = await tryJinaReader(fetchUrl)
+        text = await tryFirecrawl(fetchUrl)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return json({ error: `Could not read the page: ${msg}` }, 502)

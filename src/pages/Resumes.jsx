@@ -132,8 +132,8 @@ export default function Resumes() {
         }
         toast.loading('Parsing your resume with AI…', { id: 'res-import' })
         try {
-          const { markdown, _usage } = await parseResumeFromFile(fileMeta.path)
-          await updateResume(stub.id, { content_md: markdown })
+          const { blocks, name: derivedName, _usage } = await parseResumeFromFile(fileMeta.path)
+          await updateResume(stub.id, { content_blocks: blocks, name: derivedName || stub.name })
           if (user?.id) {
             await trackUsage(user.id, 'resume_imports', _usage.model, _usage.inputTokens, _usage.outputTokens)
             refreshImportLimit()
@@ -259,7 +259,7 @@ export default function Resumes() {
                   />
                 </label>
                 <div className="preview">
-                  <MiniResume content={r.content_md} />
+                  <MiniResume row={r} />
                 </div>
                 <div className="meta">
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
@@ -315,8 +315,70 @@ function ResumeRowMenu({ onDuplicate, onDelete }) {
   )
 }
 
-function MiniResume({ content = '' }) {
-  const lines = content.split('\n').slice(0, 14)
+// Tiny rendered preview shown inside each resume card on the library page.
+// Handles both the new block format and legacy `content_md`.
+function MiniResume({ row }) {
+  const blocks = Array.isArray(row?.content_blocks) && row.content_blocks.length
+    ? row.content_blocks
+    : null
+
+  if (blocks) {
+    const visible = blocks.filter(b => b.included).slice(0, 6)
+    return (
+      <div className="mini-resume">
+        {visible.map(b => {
+          const d = b.data || {}
+          if (b.type === 'header') {
+            return (
+              <div key={b.id}>
+                <div className="mini-name">{d.name || 'Your name'}</div>
+                {(d.title || d.location) && <div className="mini-sub">{[d.title, d.location].filter(Boolean).join(' · ')}</div>}
+              </div>
+            )
+          }
+          if (b.type === 'summary') {
+            return (
+              <div key={b.id}>
+                <div className="mini-h">Summary</div>
+                <div className="mini-line">{stripHtml(d.html).slice(0, 80)}</div>
+              </div>
+            )
+          }
+          if (b.type === 'experience') {
+            return (
+              <div key={b.id}>
+                <div className="mini-h">Experience</div>
+                <div className="mini-strong">{[d.company, d.role].filter(Boolean).join(' · ').slice(0, 40)}</div>
+                {(d.bullets || []).slice(0, 2).map(p => (
+                  <div key={p.id} className="mini-bullet">• {stripHtml(p.html).slice(0, 50)}</div>
+                ))}
+              </div>
+            )
+          }
+          if (b.type === 'education') {
+            return (
+              <div key={b.id}>
+                <div className="mini-h">Education</div>
+                <div className="mini-strong">{[d.degree, d.school].filter(Boolean).join(' · ').slice(0, 40)}</div>
+              </div>
+            )
+          }
+          if (b.type === 'skills') {
+            return (
+              <div key={b.id}>
+                <div className="mini-h">Skills</div>
+                <div className="mini-line">{stripHtml(d.html).slice(0, 60)}</div>
+              </div>
+            )
+          }
+          return null
+        })}
+      </div>
+    )
+  }
+
+  // Legacy: render the old markdown preview.
+  const lines = (row?.content_md || '').split('\n').slice(0, 14)
   return (
     <div style={{ padding: '20px 22px', fontSize: 9, lineHeight: 1.4, color: 'var(--ink-2)' }}>
       {lines.map((l, i) => {
@@ -328,4 +390,8 @@ function MiniResume({ content = '' }) {
       })}
     </div>
   )
+}
+
+function stripHtml(html) {
+  return String(html || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim()
 }

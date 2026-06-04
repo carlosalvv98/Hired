@@ -744,10 +744,16 @@ a { color: inherit; text-decoration: none; }
 .ai-parsed-banner b { color: var(--ink); font-weight: 600; }
 
 /* ───── Resume ───── */
-/* Aim for 4–5 cards per row on a typical 1440px tracker layout. The
-   auto-fill keyword lets the grid pack as many cards as fit while keeping
-   each one comfortably readable. */
-.resume-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+/* Explicit responsive breakpoints — 5 cards across on desktop, 3 on
+   tablet, 1 on mobile. Avoids auto-fill's tendency to give us 4 wide
+   cards when 5 narrower ones would feel more like a "library". */
+.resume-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+@media (max-width: 1100px) { .resume-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px)  { .resume-grid { grid-template-columns: 1fr; gap: 10px; } }
 .resume-card {
   position: relative;
   background: #fff;
@@ -762,13 +768,13 @@ a { color: inherit; text-decoration: none; }
 .resume-card:hover { box-shadow: var(--shadow-card); transform: translateY(-1px); }
 .resume-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .resume-card .preview {
-  height: 150px; background: var(--bg); position: relative;
+  height: 130px; background: var(--bg); position: relative;
   border-bottom: 1px solid var(--line); overflow: hidden;
   border-radius: var(--r-card) var(--r-card) 0 0;
 }
-.resume-card .meta { padding: 10px 12px; }
-.resume-card .meta h4 { margin: 0; font-size: 13px; font-weight: 600; min-width: 0; }
-.resume-card .meta .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; font-family: var(--mono); }
+.resume-card .meta { padding: 9px 11px; }
+.resume-card .meta h4 { margin: 0; font-size: 12.5px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resume-card .meta .sub { font-size: 10.5px; color: var(--ink-3); margin-top: 2px; font-family: var(--mono); }
 .resume-card .stats { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--ink-2); }
 .resume-card .stats b { color: var(--ink); font-weight: 600; font-family: var(--mono); }
 
@@ -809,7 +815,13 @@ a { color: inherit; text-decoration: none; }
 .editor-left { border-right: 1px solid var(--line); overflow-y: auto; padding: 18px 16px; background: var(--bg); }
 .editor-left h4 { margin: 18px 0 6px; font-size: 11px; font-family: var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
 .editor-left h4:first-child { margin-top: 4px; }
-.editor-right { overflow-y: auto; background: var(--bg-2); padding: 28px; display: flex; justify-content: center; }
+.editor-right {
+  overflow-y: auto;
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
 .resume-paper {
   background: #fff;
   width: 100%; max-width: 760px; min-height: 100%;
@@ -1307,4 +1319,437 @@ a { color: inherit; text-decoration: none; }
   .upgrade-cards { grid-template-columns: repeat(2, 1fr); }
   .upgrade-table { font-size: 11.5px; }
   .upgrade-table th, .upgrade-table td { padding: 7px 8px; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+   Modular resume editor — blocks, drag handles, inline rich text.
+   The visual goal: the "resume paper" looks like a final document, with
+   editing affordances (drag handle, checkbox, menu) sitting in subtle
+   gutters that fade in on hover so the resume itself takes the focus.
+   ───────────────────────────────────────────────────────────────────── */
+
+.resume-paper-blocks {
+  padding: 48px 56px;
+  margin: 24px auto;
+  /* The paper still has max-width: 760px from .resume-paper. The auto
+     margins center it now that .editor-right uses align-items: stretch. */
+}
+
+/* Word-style ribbon — full-width sticky bar at the top of the right
+   pane. Sits flush against the top of the scroll container so it stays
+   visible while the user works further down the resume. */
+.resume-toolbar-sticky {
+  position: sticky; top: 0; z-index: 5;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 16px;
+  display: flex; justify-content: center;
+}
+
+.rt-toolbar {
+  display: inline-flex; align-items: center; gap: 1px;
+}
+.rt-toolbar-btn {
+  background: transparent; border: none;
+  width: 26px; height: 26px;
+  border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-2); cursor: pointer;
+  transition: background 100ms var(--ease), color 100ms var(--ease);
+}
+.rt-toolbar-btn:hover { background: var(--bg); color: var(--ink); }
+.rt-toolbar-sep {
+  width: 1px; height: 16px; background: var(--line); margin: 0 4px;
+}
+
+/* Rich text contenteditable surface */
+.rt-field {
+  min-height: 1.4em;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.rt-field:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.rt-field strong { font-weight: 700; }
+.rt-field em { font-style: italic; }
+.rt-field u { text-decoration: underline; }
+.rt-field a { color: var(--accent); text-decoration: underline; }
+.rt-field ul, .rt-field ol { margin: 4px 0 4px 22px; padding: 0; }
+.rt-field h1 { font-size: 17px; font-weight: 700; margin: 8px 0 4px; }
+.rt-field h2 {
+  font-size: 11px; font-weight: 700; margin: 12px 0 4px;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-2);
+}
+
+/* Block list */
+.rb-list { display: flex; flex-direction: column; gap: 6px; }
+
+.rb-row {
+  display: grid;
+  grid-template-columns: 36px 1fr 30px;
+  gap: 4px;
+  padding: 10px 6px 10px 0;
+  border-radius: 6px;
+  position: relative;
+  transition: background 100ms var(--ease);
+}
+.rb-row:hover { background: rgba(99, 102, 241, 0.025); }
+.rb-row.rb-dragging { opacity: 0.4; }
+.rb-row.rb-drop-target { background: rgba(99, 102, 241, 0.08); box-shadow: inset 0 2px 0 0 var(--accent); }
+.rb-row.rb-excluded { opacity: 0.55; }
+
+.rb-row-gutter {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding-top: 4px;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.rb-row:hover .rb-row-gutter,
+.rb-row:focus-within .rb-row-gutter,
+.rb-row.rb-excluded .rb-row-gutter { opacity: 1; }
+
+.rb-drag {
+  background: transparent; border: none; padding: 2px;
+  border-radius: 4px; color: var(--ink-3);
+  cursor: grab; display: flex;
+}
+.rb-drag:hover { color: var(--ink); background: var(--bg); }
+.rb-drag:active { cursor: grabbing; }
+
+.rb-include {
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.rb-include input { width: 13px; height: 13px; cursor: pointer; accent-color: var(--accent); }
+
+.rb-row-body { min-width: 0; }
+
+.rb-row-actions {
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 4px;
+  position: relative;
+  opacity: 0;
+  transition: opacity 120ms var(--ease);
+}
+.rb-row:hover .rb-row-actions { opacity: 1; }
+.rb-menu-btn {
+  background: transparent; border: none;
+  width: 26px; height: 26px;
+  border-radius: 5px; color: var(--ink-3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.rb-menu-btn:hover { background: var(--bg); color: var(--ink); }
+.rb-menu-scrim { position: fixed; inset: 0; z-index: 70; }
+.rb-menu {
+  position: absolute; top: 100%; right: 0; z-index: 80;
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(20, 20, 40, 0.10);
+  padding: 4px;
+  min-width: 150px;
+  display: flex; flex-direction: column;
+}
+.rb-menu button {
+  display: flex; align-items: center; gap: 8px;
+  background: transparent; border: none;
+  padding: 7px 10px; border-radius: 5px;
+  font-size: 12px; color: var(--ink);
+  cursor: pointer; text-align: left;
+}
+.rb-menu button:hover { background: var(--bg); }
+.rb-menu-danger { color: var(--bad) !important; }
+.rb-menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+.rb-excluded-tag {
+  font-size: 10px; font-family: var(--mono);
+  color: var(--ink-3); margin-top: 6px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+/* Inline editable text — implemented as a contenteditable span so it
+   autosizes to its contents (an `<input>` would clip at the default
+   `size` width, cutting off long titles like "Product Management
+   Specialist"). */
+.rb-inline {
+  display: inline-block;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  padding: 1px 3px;
+  border-radius: 3px;
+  min-width: 8px;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  transition: background 100ms var(--ease), box-shadow 100ms var(--ease);
+}
+.rb-inline:focus { background: rgba(99, 102, 241, 0.06); box-shadow: 0 0 0 1px var(--accent-soft); }
+.rb-inline:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.rb-inline-mono { font-family: var(--mono); font-size: 0.92em; }
+
+.rb-dot { color: var(--ink-3); margin: 0 6px; }
+.rb-dash { color: var(--ink-3); margin: 0 4px; }
+.rb-spacer { flex: 1; }
+.rb-strong { font-weight: 700; }
+.rb-muted { color: var(--ink-3); font-size: 0.95em; }
+
+/* Section heading row (Experience, Education, etc.) — only on first
+   block of a type. */
+.rb-section-h {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--accent);
+  margin: 0 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.rb-section-h-input {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--accent);
+  display: block; width: 100%;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+.rb-section-h-input:focus { background: transparent; box-shadow: none; border-bottom-color: var(--accent); }
+
+/* Header block */
+.rb-header { display: flex; flex-direction: column; gap: 2px; }
+.rb-name {
+  font-size: 22px; font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  padding: 2px 3px;
+}
+.rb-header-meta { display: flex; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--ink-2); }
+.rb-header-contact {
+  display: flex; flex-wrap: wrap; align-items: center;
+  font-size: 11.5px; color: var(--ink-2);
+  margin-top: 4px;
+}
+.rb-header-link { display: inline-flex; align-items: center; }
+.rb-link-remove, .rb-add-link {
+  background: transparent; border: 1px dashed var(--line);
+  font-size: 10.5px; color: var(--ink-3);
+  border-radius: 4px; padding: 1px 6px;
+  cursor: pointer; margin-left: 6px;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.rb-link-remove { border: none; padding: 1px 3px; }
+.rb-link-remove:hover { color: var(--bad); }
+.rb-add-link:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Experience / Education / Project block */
+.rb-exp, .rb-edu { display: flex; flex-direction: column; gap: 4px; }
+.rb-exp-head {
+  display: flex; flex-wrap: wrap; align-items: center;
+  font-size: 13px; color: var(--ink);
+}
+.rb-exp-dates {
+  display: flex; flex-wrap: wrap; align-items: center;
+  font-size: 11.5px; color: var(--ink-2);
+  margin-bottom: 2px;
+}
+
+/* Bullets */
+.rb-bullets { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.rb-bullet {
+  display: grid;
+  grid-template-columns: 14px 1fr 22px;
+  align-items: start;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.rb-bullet-marker { color: var(--ink-2); user-select: none; padding-top: 1px; }
+.rb-bullet .rt-field { padding: 1px 3px; border-radius: 3px; }
+.rb-bullet .rt-field:focus { background: rgba(99, 102, 241, 0.05); }
+.rb-bullet-remove {
+  background: transparent; border: none;
+  color: var(--ink-3); cursor: pointer;
+  padding: 2px; border-radius: 4px;
+  opacity: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity 100ms var(--ease);
+}
+.rb-bullet:hover .rb-bullet-remove { opacity: 1; }
+.rb-bullet-remove:hover { color: var(--bad); background: var(--bg); }
+.rb-add-bullet {
+  background: transparent; border: none;
+  color: var(--ink-3); cursor: pointer;
+  font-size: 11.5px; padding: 4px 4px;
+  display: inline-flex; align-items: center; gap: 4px;
+  align-self: flex-start;
+  margin-top: 2px;
+  border-radius: 4px;
+}
+.rb-add-bullet:hover { color: var(--accent); background: rgba(99, 102, 241, 0.05); }
+
+/* Prose block (summary, skills, certifications) */
+.rb-prose { display: flex; flex-direction: column; gap: 4px; }
+.rb-prose .rt-field {
+  font-size: 12.5px; line-height: 1.6;
+  padding: 2px 3px; border-radius: 3px;
+}
+.rb-prose .rt-field:focus { background: rgba(99, 102, 241, 0.05); }
+
+/* Add section button at the bottom of the list */
+.rb-add-wrap { margin-top: 16px; }
+.rb-add-section {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--ink-2);
+  font-size: 12px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 100ms var(--ease), color 100ms var(--ease), background 100ms var(--ease);
+}
+.rb-add-section:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.04);
+}
+.rb-add-menu {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
+.rb-add-menu-h {
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.rb-add-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.rb-add-menu-item {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 100ms var(--ease), background 100ms var(--ease);
+}
+.rb-add-menu-item:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.04); }
+.rb-add-menu-cancel {
+  background: transparent; border: none;
+  color: var(--ink-3); font-size: 11.5px;
+  padding: 4px 8px; cursor: pointer;
+}
+.rb-add-menu-cancel:hover { color: var(--ink); }
+
+/* Sidebar outline of all blocks — drag to reorder, click to scroll-to */
+.rb-outline { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
+.rb-outline-row {
+  display: grid;
+  grid-template-columns: 12px 14px 14px 1fr;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 100ms var(--ease);
+}
+.rb-outline-row:hover { background: #fff; }
+.rb-outline-dragging { opacity: 0.4; }
+.rb-outline-drop-target {
+  background: rgba(99, 102, 241, 0.10);
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.rb-outline-excluded { opacity: 0.5; }
+.rb-outline-drag {
+  background: transparent; border: none;
+  padding: 0;
+  color: var(--ink-3);
+  cursor: grab;
+  display: flex; align-items: center;
+}
+.rb-outline-drag:active { cursor: grabbing; }
+.rb-outline-check {
+  width: 12px; height: 12px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+.rb-outline-ico { color: var(--ink-2); flex-shrink: 0; }
+.rb-outline-text { min-width: 0; overflow: hidden; }
+.rb-outline-title {
+  font-size: 11.5px; font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rb-outline-sub {
+  font-size: 10.5px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-top: 1px;
+}
+
+/* Brief highlight after click-to-scroll so the user can spot the block
+   that just came into view. */
+.rb-row-flash {
+  background: rgba(99, 102, 241, 0.10) !important;
+  transition: background 200ms var(--ease);
+}
+
+/* Mini-resume preview in library cards */
+.mini-resume {
+  padding: 12px 14px;
+  font-size: 8.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.mini-resume .mini-name { font-size: 11px; font-weight: 700; color: var(--ink); }
+.mini-resume .mini-sub { font-size: 8px; color: var(--ink-3); }
+.mini-resume .mini-h {
+  font-size: 7.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-top: 4px;
+}
+.mini-resume .mini-strong { font-weight: 600; color: var(--ink); }
+.mini-resume .mini-line, .mini-resume .mini-bullet {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Responsive: tablet / mobile */
+@media (max-width: 900px) {
+  .resume-paper-blocks { padding: 28px 24px; }
+  .rb-row { grid-template-columns: 26px 1fr 26px; }
+  .rb-name { font-size: 18px; }
+}
+@media (max-width: 640px) {
+  .editor-wrap { grid-template-columns: 1fr; }
+  .editor-left { border-right: none; border-bottom: 1px solid var(--line); max-height: 280px; }
+  .resume-paper-blocks { padding: 18px 14px; }
+  .rb-row { grid-template-columns: 22px 1fr 24px; padding: 8px 4px 8px 0; }
+  .rb-row-gutter, .rb-row-actions { opacity: 1; }
+  .rt-toolbar { flex-wrap: wrap; padding: 3px 4px; gap: 1px; }
+  .rt-toolbar-btn { width: 24px; height: 24px; }
+  .rb-name { font-size: 17px; }
+  .rb-exp-head, .rb-header-meta, .rb-header-contact { font-size: 12px; }
 }
