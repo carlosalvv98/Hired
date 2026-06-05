@@ -9,14 +9,14 @@ import { StageDropdown } from '../components/Drawer'
 import Rating from '../components/Rating'
 import IvProgress from '../components/IvProgress'
 import AddJobModal from '../components/AddJobModal'
-import { listApplications, updateApplication, setStage, listSteps, listResumes, deleteApplication, createResume, uploadResumeFile, updateResume } from '../lib/api'
+import { listApplications, updateApplication, setStage, autoSetStage, listSteps, listResumes, deleteApplication, createResume, uploadResumeFile, updateResume } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { parseResumeFromFile } from '../lib/agents/resumeImporter'
 import { trackUsage } from '../lib/ai'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
-import { STAGES, formatSalary } from '../lib/stages'
+import { STAGES, STAGE_LABEL, formatSalary } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
 import { useUI } from '../hooks/useUI'
 import toast from 'react-hot-toast'
@@ -53,6 +53,35 @@ const SORT_FIELD = {
 
 const STOP_PROP = new Set(['select', 'star', 'source', 'link', 'resume', 'status'])
 
+// Terminal "dead" stages — moving into one of these auto-archives the
+// application (and surfaces a toast) since there's nothing left to track.
+const ARCHIVING_STAGES = new Set(['reject', 'closed'])
+
+// Auto-ghost / auto-close rule. In-flight apps with no activity for
+// GHOST_DAYS get moved to Ghosted; once idle for CLOSE_DAYS they're Closed
+// (archived). Driven off last_activity_at, evaluated client-side on load.
+const IN_FLIGHT_STAGES = ['applied', 'screen', 'iv', 'final']
+const GHOST_DAYS = 30
+const CLOSE_DAYS = 60
+const DAY_MS = 86_400_000
+
+// Returns the transitions a stale sweep would make: [{ id, from, to, archive, app }].
+function evaluateStale(list) {
+  const now = Date.now()
+  const out = []
+  for (const a of list) {
+    if (a.archived || !a.last_activity_at) continue
+    const idle = (now - new Date(a.last_activity_at).getTime()) / DAY_MS
+    const inFlight = IN_FLIGHT_STAGES.includes(a.stage)
+    if ((inFlight || a.stage === 'ghost') && idle >= CLOSE_DAYS) {
+      out.push({ id: a.id, from: a.stage, to: 'closed', archive: true, app: a })
+    } else if (inFlight && idle >= GHOST_DAYS) {
+      out.push({ id: a.id, from: a.stage, to: 'ghost', archive: false, app: a })
+    }
+  }
+  return out
+}
+
 // Should we auto-stamp applied_at on this stage change? Yes when moving
 // from "new" (or no applied date) into any stage that means the user has
 // actually applied. Doesn't overwrite an existing applied_at.
@@ -78,6 +107,8 @@ export default function Tracker() {
   const [sort, setSort] = useState({ key: null, dir: 'asc' })
   const [params, setParams] = useSearchParams()
   const { openDrawer } = useUI()
+  // Run the stale sweep only once per mount, on the live (non-archived) view.
+  const autoSweepDone = useRef(false)
 
   const load = async () => {
     setLoading(true)
@@ -89,9 +120,53 @@ export default function Tracker() {
         try { stepsByApp[app.id] = await listSteps(app.id) } catch { stepsByApp[app.id] = [] }
       }))
       setSteps(stepsByApp)
+      if (!showArchived && !autoSweepDone.current) {
+        autoSweepDone.current = true
+        runStaleSweep(a)
+      }
     } catch (e) {
       toast.error('Could not load applications')
     } finally { setLoading(false) }
+  }
+
+  // Auto-move idle in-flight apps to Ghosted / Closed, then offer one Undo.
+  const runStaleSweep = async (list) => {
+    const transitions = evaluateStale(list)
+    if (!transitions.length) return
+    const before = transitions.map(t => ({ id: t.id, stage: t.from, archived: !!t.app.archived }))
+
+    setApps(prev => {
+      const archivedIds = new Set(transitions.filter(t => t.archive).map(t => t.id))
+      const next = prev.map(a => {
+        const t = transitions.find(x => x.id === a.id)
+        return t ? { ...a, stage: t.to, ...(t.archive ? { archived: true } : {}) } : a
+      })
+      return showArchived ? next : next.filter(a => !archivedIds.has(a.id))
+    })
+
+    try {
+      await Promise.all(transitions.map(t => autoSetStage(t.id, t.to, t.archive ? true : undefined)))
+    } catch { toast.error('Auto-update failed'); load(); return }
+
+    const nGhost = transitions.filter(t => t.to === 'ghost').length
+    const nClose = transitions.filter(t => t.to === 'closed').length
+    const parts = []
+    if (nGhost) parts.push(`${nGhost} ghosted`)
+    if (nClose) parts.push(`${nClose} closed`)
+    toast((tt) => (
+      <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span>Auto-updated {parts.join(' · ')} — inactive {GHOST_DAYS}+ days</span>
+        <button className="btn ghost tiny" onClick={() => { toast.dismiss(tt.id); undoStaleSweep(before) }}>Undo</button>
+      </span>
+    ), { duration: 8000 })
+  }
+
+  const undoStaleSweep = async (before) => {
+    try {
+      await Promise.all(before.map(b => autoSetStage(b.id, b.stage, b.archived)))
+      toast.success('Reverted')
+      load()
+    } catch { toast.error('Could not undo'); load() }
   }
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [showArchived])
@@ -133,6 +208,32 @@ export default function Tracker() {
     setTimeout(() => openDrawer(app.id), 200)
   }
 
+  // Single source of truth for a one-off status change (table + kanban).
+  // Stamps applied_at when crossing into an applied stage, and auto-archives
+  // when moving into a terminal stage (Rejected / Closed).
+  const applyStageChange = async (id, stage) => {
+    const row = apps.find(a => a.id === id)
+    if (!row) return
+    const stamp = needsAppliedStamp(row, stage)
+    const archive = ARCHIVING_STAGES.has(stage) && !row.archived
+    const now = new Date().toISOString()
+    setApps(prev => {
+      const updated = prev.map(a => a.id === id
+        ? { ...a, stage, applied_at: stamp ? now : a.applied_at, ...(archive ? { archived: true, archived_at: now } : {}) }
+        : a)
+      // When archiving and we're not in the archived view, drop the row.
+      return archive && !showArchived ? updated.filter(a => a.id !== id) : updated
+    })
+    try {
+      await setStage(id, stage)
+      if (stamp) await updateApplication(id, { applied_at: now })
+      if (archive) {
+        await updateApplication(id, { archived: true, archived_at: now })
+        toast.success(`Archived — moved to ${STAGE_LABEL[stage]}`)
+      }
+    } catch { toast.error('Could not change status'); load() }
+  }
+
   // Selection helpers — Set wrapped in state, but always rebuild it on
   // mutation so React picks up the change. lastClickedIndex powers
   // shift-click range selection.
@@ -158,11 +259,15 @@ export default function Tracker() {
     if (!ids.length) return
     setBulkStageOpen(false)
     const now = new Date().toISOString()
+    const archive = ARCHIVING_STAGES.has(stage)
     // Optimistic — stamp applied_at for any row crossing into a post-"new"
-    // stage that doesn't have one yet.
-    setApps(prev => prev.map(a => ids.includes(a.id)
-      ? { ...a, stage, applied_at: needsAppliedStamp(a, stage) ? now : a.applied_at }
-      : a))
+    // stage, and archive (drop from view) for terminal stages.
+    setApps(prev => {
+      const updated = prev.map(a => ids.includes(a.id)
+        ? { ...a, stage, applied_at: needsAppliedStamp(a, stage) ? now : a.applied_at, ...(archive ? { archived: true, archived_at: now } : {}) }
+        : a)
+      return archive && !showArchived ? updated.filter(a => !ids.includes(a.id)) : updated
+    })
     try {
       await Promise.all(ids.map(async (id) => {
         const row = apps.find(a => a.id === id)
@@ -170,8 +275,13 @@ export default function Tracker() {
         if (row && needsAppliedStamp(row, stage)) {
           await updateApplication(id, { applied_at: now })
         }
+        if (archive && !row?.archived) {
+          await updateApplication(id, { archived: true, archived_at: now })
+        }
       }))
-      toast.success(`Updated ${ids.length} application${ids.length === 1 ? '' : 's'}`)
+      toast.success(archive
+        ? `Archived ${ids.length} — moved to ${STAGE_LABEL[stage]}`
+        : `Updated ${ids.length} application${ids.length === 1 ? '' : 's'}`)
       clearSelection()
     } catch {
       toast.error('Some updates failed')
@@ -312,25 +422,11 @@ export default function Tracker() {
               onSort={(key) => setSort(prev => prev.key === key
                 ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
                 : { key, dir: 'asc' })}
-              onChangeStage={async (id, stage) => {
-                const row = apps.find(a => a.id === id)
-                const stamp = row && needsAppliedStamp(row, stage)
-                const now = new Date().toISOString()
-                setApps(prev => prev.map(a => a.id === id
-                  ? { ...a, stage, applied_at: stamp ? now : a.applied_at } : a))
-                try {
-                  await setStage(id, stage)
-                  if (stamp) await updateApplication(id, { applied_at: now })
-                } catch { toast.error('Could not change status'); load() }
-              }}
+              onChangeStage={applyStageChange}
             />
           </>
         ) : view === 'kanban' ? (
-          <TrackerKanban apps={filtered} onOpen={openDrawer} onMove={async (id, stage) => {
-            setApps(prev => prev.map(a => a.id === id ? { ...a, stage } : a))
-            try { await setStage(id, stage); toast.success('Moved') }
-            catch { toast.error('Move failed'); load() }
-          }} />
+          <TrackerKanban apps={filtered} onOpen={openDrawer} onMove={applyStageChange} />
         ) : (
           <TrackerCards apps={filtered} onOpen={openDrawer} />
         )}
@@ -561,6 +657,10 @@ function TrackerTable({
             {apps.map((a, rowIndex) => (
               <tr key={a.id}
                 className={`s-${a.stage} ${selectedIds.has(a.id) ? 'row-selected' : ''}`}
+                // Lift the row whose status menu is open above later rows —
+                // dimmed (reject/ghost/closed) rows create a stacking context
+                // via opacity that would otherwise bury the dropdown.
+                style={openStageId === a.id ? { position: 'relative', zIndex: 30 } : undefined}
                 onClick={() => onOpen(a.id)}>
                 {cols.map(c => (
                   <td key={c.k}

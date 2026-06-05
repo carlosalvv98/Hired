@@ -8,12 +8,13 @@ export const STAGES = [
   { k: 'accepted', n: 'Accepted',     color: 'var(--stage-accepted)' },
   { k: 'reject',   n: 'Rejected',     color: 'var(--stage-reject)' },
   { k: 'ghost',    n: 'Ghosted',      color: 'var(--stage-ghost)' },
+  { k: 'closed',   n: 'Closed',       color: 'var(--stage-closed)' },
 ];
 
 export const STAGE_LABEL = {
   new: 'New', applied: 'Applied', screen: 'Screen', iv: 'Interviewing',
   final: 'Final', offer: 'Offer', accepted: 'Accepted',
-  reject: 'Rejected', ghost: 'Ghosted',
+  reject: 'Rejected', ghost: 'Ghosted', closed: 'Closed',
 };
 
 // Stages a user advances through linearly via "Move to next stage".

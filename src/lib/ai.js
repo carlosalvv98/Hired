@@ -38,7 +38,7 @@ export const TIER_LIMITS = {
     interview_prep: 2,      // monthly
     community_intel: 0,     // locked
     ask_ai_per_day: 5,      // daily
-    nudges: 5,              // total active
+    nudges: 0,              // locked — AI nudges are a Pro/Elite feature
     peer_comparisons: 0,    // locked
     job_match_score: 0,     // locked
   },
@@ -53,7 +53,7 @@ export const TIER_LIMITS = {
     interview_prep: 10,
     community_intel: 0,
     ask_ai_per_day: -1,
-    nudges: -1,
+    nudges: 20,             // monthly
     peer_comparisons: 0,
     job_match_score: -1,
   },

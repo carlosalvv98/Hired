@@ -114,10 +114,18 @@ export default function Drawer({ id, onClose }) {
       // Stamp applied_at the first time a row moves past "new" so the
       // Applied column on the tracker fills in automatically.
       const shouldStamp = !app.applied_at
-        && newStage !== 'new' && newStage !== 'reject' && newStage !== 'ghost'
+        && !['new', 'reject', 'ghost', 'closed'].includes(newStage)
       if (shouldStamp) {
         const stamped = await updateApplication(app.id, { applied_at: new Date().toISOString() })
         finalApp = { ...finalApp, ...stamped }
+      }
+      // Terminal stages (Rejected / Closed) auto-archive — there's nothing
+      // left to track. Close the drawer since the row leaves the tracker.
+      if (['reject', 'closed'].includes(newStage) && !app.archived) {
+        await updateApplication(app.id, { archived: true, archived_at: new Date().toISOString() })
+        toast.success(`Archived — moved to ${STAGE_LABEL[newStage]}`)
+        onClose()
+        return
       }
       setApp(finalApp)
       toast.success(`Status: ${STAGE_LABEL[newStage]}`)

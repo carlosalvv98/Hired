@@ -73,6 +73,26 @@ export async function setStage(id, stage, actor = 'user') {
   return next;
 }
 
+// Stage change WITHOUT touching last_activity_at — used by the auto-ghost /
+// auto-close sweep so the idle clock keeps running (and the Undo can restore
+// the exact prior state). Pass `archived` to also (un)archive. Logged as a
+// 'system' actor event.
+export async function autoSetStage(id, stage, archived = undefined) {
+  const prev = await getApplication(id);
+  const patch = { stage };
+  if (archived !== undefined) {
+    patch.archived = archived;
+    patch.archived_at = archived ? new Date().toISOString() : null;
+  }
+  const { data, error } = await supabase
+    .from('applications').update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  if (prev.stage !== stage) {
+    await logEvent(id, 'stage_change', 'system', { from: prev.stage, to: stage, auto: true });
+  }
+  return data;
+}
+
 export async function deleteApplication(id) {
   const { error } = await supabase.from('applications').delete().eq('id', id);
   if (error) throw error;
@@ -429,6 +449,32 @@ export async function dismissNudge(id) {
   const { error } = await supabase.from('ai_nudges')
     .update({ dismissed_at: new Date().toISOString() }).eq('id', id);
   if (error) throw error;
+}
+
+// All of a user's nudges (active + dismissed) — used to de-dupe generation so
+// we don't re-nag about something already shown or dismissed.
+export async function listAllNudges(userId, sinceISO) {
+  let q = supabase.from('ai_nudges').select('id, kind, application_id, dismissed_at, created_at')
+    .eq('user_id', userId);
+  if (sinceISO) q = q.gte('created_at', sinceISO);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+// Insert generated nudges (best-effort; returns the created rows).
+export async function createNudges(rows) {
+  if (!rows?.length) return [];
+  const { data, error } = await supabase.from('ai_nudges').insert(rows).select();
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateUser(id, patch) {
+  const { data, error } = await supabase.from('users')
+    .update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
 }
 
 // Users

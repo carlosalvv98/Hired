@@ -45,6 +45,7 @@
   --stage-accepted: #15803d;
   --stage-reject: #dc2626;
   --stage-ghost: #9ca3af;
+  --stage-closed: #475569;
 
   /* Type */
   --sans: 'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -299,6 +300,7 @@ a { color: inherit; text-decoration: none; }
 .pill.accepted{ background: #bbf7d0; color: #14532d; }
 .pill.reject  { background: #fee2e2; color: #991b1b; }
 .pill.ghost   { background: #f3f4f6; color: #6b7280; }
+.pill.closed  { background: #e2e8f0; color: #334155; }
 
 /* Tags */
 .tag {
@@ -411,7 +413,7 @@ a { color: inherit; text-decoration: none; }
 .tbl tbody tr.s-final   { background: #fdf2f8; }
 .tbl tbody tr.s-offer   { background: #f0fdf4; }
 .tbl tbody tr.s-applied { background: #f6f9ff; }
-.tbl tbody tr.s-reject td, .tbl tbody tr.s-ghost td { opacity: 0.65; }
+.tbl tbody tr.s-reject td, .tbl tbody tr.s-ghost td, .tbl tbody tr.s-closed td { opacity: 0.65; }
 
 .tbl-reorderable thead th.th-drag { cursor: grab; user-select: none; transition: background 100ms var(--ease), color 100ms var(--ease); }
 .tbl-reorderable thead th.th-drag:active { cursor: grabbing; }
@@ -520,7 +522,10 @@ a { color: inherit; text-decoration: none; }
 /* ───── Kanban ───── */
 .kan-wrap {
   display: grid;
-  grid-template-columns: repeat(6, minmax(220px, 1fr));
+  /* One row of stage columns; scroll horizontally when they don't all fit
+     (otherwise the last column wraps under the first). */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
   gap: 12px;
   padding: 16px 22px 40px;
   overflow-x: auto; height: 100%; align-items: start;
@@ -891,6 +896,7 @@ a { color: inherit; text-decoration: none; }
 .dot.accepted { background: var(--stage-accepted); }
 .dot.reject   { background: var(--stage-reject); }
 .dot.ghost    { background: var(--stage-ghost); }
+.dot.closed   { background: var(--stage-closed); }
 
 /* ───── Auth ───── */
 .auth-wrap {

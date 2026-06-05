@@ -23,7 +23,7 @@ const FEATURE_ROWS = [
   { feature: 'resume_tailoring', label: 'Resume tailoring',     reset: 'total' },
   { feature: 'resume_imports',   label: 'AI resume imports',    reset: 'total' },
   { feature: 'resume_versions',  label: 'Resume versions',      reset: 'active' },
-  { feature: 'nudges',           label: 'Active nudges',        reset: 'active' },
+  { feature: 'nudges',           label: 'AI nudges',            reset: 'monthly' },
   { feature: 'community_intel',  label: 'Community intel',      reset: 'monthly' },
   { feature: 'peer_comparisons', label: 'Peer comparisons',     reset: 'monthly' },
   { feature: 'job_match_score',  label: 'Job match score',      reset: 'monthly' },

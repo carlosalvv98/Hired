@@ -1,24 +1,29 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sparkles, Plus, FileText, X, Mail, ArrowRight } from 'lucide-react'
+import { Sparkles, Plus, FileText, X, Mail, ArrowRight, Settings2 } from 'lucide-react'
 import AppBar from '../components/AppBar'
 import Logo from '../components/Logo'
 import { domainFromUrl } from '../lib/logos'
 import StatusPill from '../components/StatusPill'
 import TaskList from '../components/TaskList'
+import NudgeConfigModal from '../components/NudgeConfigModal'
 import { formatSalary } from '../lib/stages'
 import AddJobModal from '../components/AddJobModal'
 import AddTaskModal from '../components/AddTaskModal'
-import { listApplications, listEmails, listTasks, listNudges, dismissNudge, updateTask, listCalendar } from '../lib/api'
+import { listApplications, listEmails, listTasks, listNudges, dismissNudge, updateTask, listCalendar, listAllNudges, createNudges, setStage } from '../lib/api'
+import { generateNudges } from '../lib/nudgeEngine'
+import { resolveNudgePrefs } from '../lib/nudgeTypes'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
+import { useLimit } from '../hooks/useLimit'
 import { shortDate } from '../lib/time'
 import { addDays, startOfDay, endOfDay, format, isBefore } from 'date-fns'
 import toast from 'react-hot-toast'
 
 export default function Dashboard() {
-  const { profile } = useAuth()
+  const { user, profile } = useAuth()
   const { openDrawer, openEmail } = useUI()
+  const { limit: nudgeLimit, loading: nudgeLimitLoading } = useLimit('nudges')
   const nav = useNavigate()
   const [apps, setApps] = useState([])
   const [emails, setEmails] = useState([])
@@ -28,6 +33,7 @@ export default function Dashboard() {
   const [showAdd, setShowAdd] = useState(false)
   const [showAddUrl, setShowAddUrl] = useState('')
   const [showAddTask, setShowAddTask] = useState(false)
+  const [showNudgeConfig, setShowNudgeConfig] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -45,7 +51,31 @@ export default function Dashboard() {
       toast.error('Could not load dashboard')
     } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() /* eslint-disable-next-line */ }, [user?.id])
+
+  // Generate fresh nudges client-side once data + the tier limit have resolved
+  // (paid tiers only). Runs after `load` so it has apps/emails/events on hand.
+  useEffect(() => {
+    if (loading || nudgeLimitLoading || nudgeLimit === 0 || !user?.id) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const existing = await listAllNudges(user.id, addDays(new Date(), -30).toISOString())
+        const remaining = nudgeLimit === -1 ? -1 : Math.max(0, nudgeLimit - nudges.length)
+        const rows = generateNudges({
+          userId: user.id, apps, emails, events,
+          existing, prefs: resolveNudgePrefs(profile?.nudge_prefs), remaining,
+        })
+        if (!cancelled && rows.length) {
+          await createNudges(rows)
+          const fresh = await listNudges()
+          if (!cancelled) setNudges(fresh)
+        }
+      } catch { /* non-fatal — nudges just won't refresh this load */ }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, nudgeLimitLoading, nudgeLimit, user?.id])
 
   const counts = useMemo(() => {
     const out = { new: 0, applied: 0, screen: 0, iv: 0, final: 0, offer: 0, reject: 0, ghost: 0 }
@@ -107,6 +137,25 @@ export default function Dashboard() {
     catch { toast.error('Could not update'); load() }
   }
 
+  // Acting on a nudge runs its mapped action, then dismisses it (completed).
+  const onNudgeAction = async (n) => {
+    const act = n.cta_action_json || {}
+    try {
+      if (act.action === 'email' && act.email_id) {
+        openEmail(act.email_id)
+      } else if (act.action === 'stage' && n.application_id && act.to_stage) {
+        await setStage(n.application_id, act.to_stage)
+        openDrawer(n.application_id)
+      } else if (act.action === 'summary') {
+        nav('/tracker')
+      } else if (n.application_id) {
+        openDrawer(n.application_id)
+      }
+      setNudges(prev => prev.filter(x => x.id !== n.id))
+      dismissNudge(n.id).catch(() => {})
+    } catch { toast.error('Could not complete that action') }
+  }
+
   return (
     <>
       <AppBar title={`Welcome${profile?.name ? `, ${profile.name.split(' ')[0]}` : ''}`} crumbs="dashboard" />
@@ -126,10 +175,15 @@ export default function Dashboard() {
               onTask={() => setShowAddTask(true)}
               onResume={() => nav('/resumes')}
             />
-            <Nudges items={nudges} onDismiss={async (id) => {
-              setNudges(prev => prev.filter(n => n.id !== id))
-              try { await dismissNudge(id) } catch {}
-            }} />
+            <Nudges
+              items={nudges}
+              locked={nudgeLimit === 0}
+              onAction={onNudgeAction}
+              onConfigure={() => setShowNudgeConfig(true)}
+              onDismiss={async (id) => {
+                setNudges(prev => prev.filter(n => n.id !== id))
+                try { await dismissNudge(id) } catch {}
+              }} />
             <WeekAhead items={weekAhead} />
             <TaskList tasks={todayTasks.slice(0, 6)} onToggle={onToggleTask} overdue={overdue.length} onAdd={() => setShowAddTask(true)} />
           </div>
@@ -141,6 +195,13 @@ export default function Dashboard() {
         onCreated={(a) => { load(); openDrawer(a.id) }}
       />}
       {showAddTask && <AddTaskModal onClose={() => setShowAddTask(false)} onCreated={() => load()} />}
+      {showNudgeConfig && (
+        <NudgeConfigModal
+          locked={nudgeLimit === 0}
+          onClose={() => setShowNudgeConfig(false)}
+          onSaved={() => load()}
+        />
+      )}
     </>
   )
 }
@@ -311,31 +372,50 @@ function QuickActions({ onAdd, onTask, onResume }) {
   )
 }
 
-function Nudges({ items, onDismiss }) {
-  if (!items.length) return null
+function Nudges({ items, locked, onAction, onConfigure, onDismiss }) {
+  const headSpark = (
+    <div style={{ width: 22, height: 22, background: 'linear-gradient(135deg, var(--accent), #a78bfa)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+      <Sparkles size={12} />
+    </div>
+  )
   return (
     <div>
       <div className="row" style={{ gap: 8, marginBottom: 10 }}>
-        <div style={{ width: 22, height: 22, background: 'linear-gradient(135deg, var(--accent), #a78bfa)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
-          <Sparkles size={12} />
-        </div>
+        {headSpark}
         <h3 style={{ margin: 0, fontSize: 13 }}>AI nudges</h3>
-        <span className="mono muted" style={{ fontSize: 11 }}>{items.length} new</span>
+        {!locked && items.length > 0 && <span className="mono muted" style={{ fontSize: 11 }}>{items.length} new</span>}
+        <span style={{ flex: 1 }} />
+        {!locked && (
+          <button className="btn ghost tiny" onClick={onConfigure} title="Configure AI nudges"><Settings2 size={12} /></button>
+        )}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {items.map(n => (
-          <div key={n.id} className="ai-card">
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 4 }}>
-              <div style={{ width: 18, height: 18, background: 'linear-gradient(135deg, var(--accent), #a78bfa)', borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0, marginTop: 1 }}>
-                <Sparkles size={10} />
-              </div>
-              <div className="nudge-h" style={{ flex: 1 }}>{n.cta_label || 'Nudge'}</div>
-              <button onClick={() => onDismiss(n.id)} style={{ color: 'var(--ink-3)' }}><X size={14} /></button>
-            </div>
-            <div className="nudge-p">{n.body_md}</div>
+
+      {(locked || items.length === 0) ? (
+        // Free tier OR no active nudges → "Configure AI Nudges" entry point.
+        <button className="ai-card" style={{ width: '100%', textAlign: 'left', cursor: 'pointer', display: 'block' }} onClick={onConfigure}>
+          <div className="nudge-h">Configure AI Nudges</div>
+          <div className="nudge-p">
+            {locked
+              ? 'Proactive, one-click reminders to follow up, prep, and keep your pipeline moving. Available on Pro & Elite — tap to see what you’d get.'
+              : 'No nudges right now. Choose which reminders Hired should surface for you.'}
           </div>
-        ))}
-      </div>
+        </button>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {items.map(n => (
+            <div key={n.id} className="ai-card" style={{ cursor: 'pointer' }} onClick={() => onAction(n)}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 4 }}>
+                <div style={{ width: 18, height: 18, background: 'linear-gradient(135deg, var(--accent), #a78bfa)', borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0, marginTop: 1 }}>
+                  <Sparkles size={10} />
+                </div>
+                <div className="nudge-h" style={{ flex: 1 }}>{n.cta_label || 'Nudge'}</div>
+                <button onClick={(e) => { e.stopPropagation(); onDismiss(n.id) }} style={{ color: 'var(--ink-3)' }} title="Dismiss"><X size={14} /></button>
+              </div>
+              <div className="nudge-p">{n.body_md}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
