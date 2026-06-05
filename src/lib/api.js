@@ -5,7 +5,16 @@ export async function findOrCreateCompany(name, domain = null) {
   if (!name) return null;
   const { data: existing } = await supabase
     .from('companies').select('*').ilike('name', name).maybeSingle();
-  if (existing) return existing;
+  if (existing) {
+    // Backfill a domain we just learned about (used for logos) if the row
+    // doesn't already have one. Best-effort — don't fail the caller on error.
+    if (domain && !existing.domain) {
+      const { data: updated } = await supabase
+        .from('companies').update({ domain }).eq('id', existing.id).select().single();
+      return updated || existing;
+    }
+    return existing;
+  }
   const { data, error } = await supabase
     .from('companies').insert({ name, domain }).select().single();
   if (error) throw error;
@@ -80,6 +89,18 @@ export async function listEvents(applicationId) {
   const { data, error } = await supabase.from('application_events')
     .select('*').eq('application_id', applicationId)
     .order('at', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+// All stage_change events across applications since a given ISO timestamp.
+// Used by the calendar analytics chart to plot interviews/offers over time.
+export async function listStageEvents(sinceISO) {
+  const { data, error } = await supabase.from('application_events')
+    .select('kind, payload_json, at')
+    .eq('kind', 'stage_change')
+    .gte('at', sinceISO)
+    .order('at', { ascending: true });
   if (error) throw error;
   return data || [];
 }
@@ -159,6 +180,14 @@ export async function listEmails({ folder = 'inbox', applicationId = null } = {}
   const { data, error } = await q;
   if (error) throw error;
   return data || [];
+}
+
+export async function getEmail(id) {
+  const { data, error } = await supabase.from('emails')
+    .select('*, application:linked_application_id(id,role_title,company:companies(name))')
+    .eq('id', id).single();
+  if (error) throw error;
+  return data;
 }
 
 export async function updateEmail(id, patch) {

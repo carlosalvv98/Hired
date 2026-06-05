@@ -6,6 +6,7 @@ const UICtx = createContext(null)
 export function UIProvider({ children }) {
   const [params, setParams] = useSearchParams()
   const drawerId = params.get('app')
+  const emailId = params.get('email')
   const [cmdK, setCmdK] = useState(false)
   const [aiPanel, setAiPanel] = useState(() => {
     try { return localStorage.getItem('hired.aiPanel') === '1' } catch { return false }
@@ -31,6 +32,18 @@ export function UIProvider({ children }) {
     setParams(next, { replace: false })
   }, [params, setParams])
 
+  const openEmail = useCallback((id) => {
+    const next = new URLSearchParams(params)
+    next.set('email', id)
+    setParams(next, { replace: false })
+  }, [params, setParams])
+
+  const closeEmail = useCallback(() => {
+    const next = new URLSearchParams(params)
+    next.delete('email')
+    setParams(next, { replace: false })
+  }, [params, setParams])
+
   const toggleAiPanel = useCallback(() => {
     setAiPanel(v => {
       const nv = !v
@@ -47,16 +60,18 @@ export function UIProvider({ children }) {
       }
       if (e.key === 'Escape') {
         if (cmdK) setCmdK(false)
+        else if (emailId) closeEmail()
         else if (drawerId) closeDrawer()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cmdK, drawerId, closeDrawer])
+  }, [cmdK, drawerId, closeDrawer, emailId, closeEmail])
 
   return (
     <UICtx.Provider value={{
       drawerId, openDrawer, closeDrawer,
+      emailId, openEmail, closeEmail,
       cmdK, setCmdK, aiPanel, toggleAiPanel,
       upgradeFeature, openUpgrade, closeUpgrade,
       navigate: nav,

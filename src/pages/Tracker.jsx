@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, Download, Sparkles, Table, KanbanSquare, LayoutGrid, ChevronDown, GripVertical, ExternalLink, FileText, X, Trash2, Upload, Loader2 } from 'lucide-react'
 import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
+import { domainFromUrl } from '../lib/logos'
 import StatusPill from '../components/StatusPill'
 import { StageDropdown } from '../components/Drawer'
 import Rating from '../components/Rating'
@@ -600,7 +601,7 @@ function renderCell(k, a, steps, h) {
     case 'role':
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <Logo co={a.company?.name} size={28} />
+          <Logo co={a.company?.name} domain={a.company?.domain || domainFromUrl(a.jd_url)} size={28} />
           <div style={{ minWidth: 0, lineHeight: 1.25 }}>
             <div style={{ fontSize: 12.75, fontWeight: 550, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.role_title}</div>
             <div style={{ fontSize: 11.5, color: 'var(--ink-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.company?.name || '—'}</div>
@@ -712,7 +713,7 @@ function TrackerKanban({ apps, onOpen, onMove }) {
                 onDragEnd={() => setDragId(null)}
                 onClick={() => onOpen(a.id)}>
                 <div className="row">
-                  <Logo co={a.company?.name} size={24} />
+                  <Logo co={a.company?.name} domain={a.company?.domain || domainFromUrl(a.jd_url)} size={24} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="role">{a.role_title}</div>
                     <div className="co">{a.company?.name} · {a.location_text || '—'}</div>
@@ -742,7 +743,7 @@ function TrackerCards({ apps, onOpen }) {
         return (
           <div key={a.id} className="card card-pad" style={{ cursor: 'pointer' }} onClick={() => onOpen(a.id)}>
             <div className="row" style={{ gap: 12, marginBottom: 10 }}>
-              <Logo co={a.company?.name} size={40} />
+              <Logo co={a.company?.name} domain={a.company?.domain || domainFromUrl(a.jd_url)} size={40} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.role_title}</div>
                 <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{a.company?.name} · {a.location_text || '—'}</div>

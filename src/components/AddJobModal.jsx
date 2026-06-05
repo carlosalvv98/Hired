@@ -77,7 +77,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
   const create = async (payload) => {
     setBusy(true)
     try {
-      const co = payload.company ? await findOrCreateCompany(payload.company) : null
+      const co = payload.company ? await findOrCreateCompany(payload.company, payload.company_domain || null) : null
       const num = (v) => (v == null || v === '' ? null : Number(v))
       // Saving from a link doesn't mean you've applied — start as 'new' unless
       // the user explicitly chose otherwise in the manual form.
@@ -230,6 +230,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
               <button className="btn ghost" onClick={() => setStep('choose')}>Back</button>
               <button className="btn indigo" disabled={busy} onClick={() => create({
                 company: parsed.company,
+                company_domain: parsed.company_domain,
                 role_title: parsed.role_title,
                 location_text: parsed.location_text,
                 mode: parsed.mode,

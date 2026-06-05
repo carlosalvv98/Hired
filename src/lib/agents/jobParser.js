@@ -34,9 +34,10 @@ const SYSTEM_PROMPT = `You are a job listing parser for a job application tracki
 Required fields:
 {
   company: string (the hiring company name, NOT the job board or recruiter agency),
+  company_domain: string | null (the employer's primary website domain, lowercase, no protocol or path — e.g. 'stripe.com'. Use the company's real homepage domain, NOT the job board. null if you can't determine it),
   role_title: string (exact job title as written),
-  location_text: string | null (city, state or 'Remote' — null if not found),
-  mode: 'remote' | 'hybrid' | 'onsite' | null,
+  location_text: string | null (the GEOGRAPHIC location the role is tied to — city, state, and/or country — even when the role is remote. e.g. 'Remote · New York, NY, US' → 'New York, NY'. Only use 'Remote' here if NO geographic place is named anywhere. null if not found),
+  mode: 'remote' | 'hybrid' | 'onsite' | null (HOW the role is worked, independent of location_text),
   salary_min: number | null (annual base, numbers only — null if not explicitly stated),
   salary_max: number | null (annual base, numbers only — null if not explicitly stated),
   salary_currency: string (default 'USD'),
@@ -51,6 +52,7 @@ CRITICAL RULES:
 - NEVER guess salary. If salary is not explicitly written in the posting, set salary_min and salary_max to null.
 - NEVER invent or assume any information not present in the text.
 - The company field must be the actual employer, not the job board (not 'LinkedIn', not 'Indeed', not 'Greenhouse', not 'careers').
+- location_text and mode are INDEPENDENT. A remote role can still be tied to a place: 'Remote · New York, NY' → location_text = 'New York, NY' AND mode = 'remote'. Never put 'Remote' in location_text when a city/state/country is also named.
 - If you cannot determine a field with certainty, set it to null.`
 
 export async function parseJobFromUrl(url) {

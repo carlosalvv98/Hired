@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import Sidebar from './Sidebar'
 import Drawer from './Drawer'
+import EmailDrawer from './EmailDrawer'
 import CmdK from './CmdK'
 import MobileLayout from './MobileLayout'
 import UpgradeModal from './UpgradeModal'
@@ -19,7 +20,7 @@ const useIsMobile = () => {
 }
 
 export default function Layout() {
-  const { drawerId, cmdK, setCmdK, closeDrawer, upgradeFeature, closeUpgrade } = useUI()
+  const { drawerId, emailId, cmdK, setCmdK, closeDrawer, closeEmail, upgradeFeature, closeUpgrade } = useUI()
   const isMobile = useIsMobile()
   const [counts, setCounts] = useState({ '/tracker': 0, '/inbox': 0 })
 
@@ -43,6 +44,7 @@ export default function Layout() {
           <Outlet />
         </MobileLayout>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
+        {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
       </>
@@ -57,6 +59,7 @@ export default function Layout() {
           <Outlet />
         </div>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
+        {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
       </div>

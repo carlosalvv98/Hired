@@ -4,8 +4,9 @@ import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
-import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2 } from 'lucide-react'
+import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2, Pencil } from 'lucide-react'
 import Logo from './Logo'
+import { domainFromUrl } from '../lib/logos'
 import StatusPill from './StatusPill'
 import { STAGES, STAGE_LABEL, STAGE_ORDER } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
@@ -14,6 +15,7 @@ import {
   setStage, listEmailsForApp, listAppContacts, updateApplication,
   addStep as apiAddStep, deleteStep as apiDeleteStep, reorderSteps,
   listResumes, deleteApplication, createResume, uploadResumeFile,
+  findOrCreateCompany,
 } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { parseResumeFromFile } from '../lib/agents/resumeImporter'
@@ -57,6 +59,7 @@ export default function Drawer({ id, onClose }) {
   const [newStepTitle, setNewStepTitle] = useState('')
   const [resumePicker, setResumePicker] = useState(false)
   const [stageMenuOpen, setStageMenuOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
   // Must live above the early-return below — React's rules of hooks require
   // every hook to be called on every render path.
   const dragIndex = useRef(null)
@@ -225,6 +228,40 @@ export default function Drawer({ id, onClose }) {
     } catch { toast.error('Could not delete') }
   }
 
+  // Persist edits made in the EditJobModal. Company is a separate entity, so
+  // when its name changes we resolve (or create) the company row and repoint
+  // company_id; everything else writes straight onto the application.
+  const onSaveEdit = async (form) => {
+    try {
+      let company_id = app.company_id
+      const newName = (form.company || '').trim()
+      if (newName && newName !== (app.company?.name || '')) {
+        const co = await findOrCreateCompany(newName)
+        company_id = co?.id || null
+      }
+      const num = (v) => (v == null || v === '' ? null : Number(v))
+      await updateApplication(app.id, {
+        company_id,
+        role_title: form.role_title?.trim() || 'Untitled role',
+        location_text: form.location_text?.trim() || null,
+        mode: form.mode || null,
+        salary_min: num(form.salary_min),
+        salary_max: num(form.salary_max),
+        salary_type: form.salary_type || null,
+        ote_min: num(form.ote_min),
+        ote_max: num(form.ote_max),
+        equity_text: form.equity_text?.trim() || null,
+        source: form.source || null,
+      })
+      setEditing(false)
+      toast.success('Changes saved')
+      // Reload so the joined company name and all facts refresh.
+      load()
+    } catch (e) {
+      toast.error(e.message || 'Could not save changes')
+    }
+  }
+
   const onToggleArchive = async () => {
     const nextArchived = !app.archived
     try {
@@ -266,6 +303,9 @@ export default function Drawer({ id, onClose }) {
             <button className="btn ghost tiny" onClick={onCopyLink}>
               <LinkIcon size={13} />Copy link
             </button>
+            <button className="btn ghost tiny" onClick={() => setEditing(true)} title="Edit job details">
+              <Pencil size={13} />Edit
+            </button>
             <button className="btn ghost tiny" onClick={onToggleArchive}
               title={app.archived ? 'Unarchive — put back on tracker' : 'Archive — hide from tracker, keep data'}>
               {app.archived ? <><ArchiveRestore size={13} />Unarchive</> : <><Archive size={13} />Archive</>}
@@ -274,13 +314,21 @@ export default function Drawer({ id, onClose }) {
               <Trash2 size={13} />Delete
             </button>
           </div>
-          <div className="row" style={{ gap: 14, alignItems: 'flex-start' }}>
-            <Logo co={app.company?.name} size={48} />
+          <div className="row" style={{ gap: 14, alignItems: 'center' }}>
+            <Logo co={app.company?.name} domain={app.company?.domain || domainFromUrl(app.jd_url)} size={64} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.018em' }}>{app.role_title}</div>
-              <div style={{ fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-                {app.company?.name} · {app.location_text || '—'} · <span className="mono">{formatMoney(app.salary_min, app.salary_max, app.salary_currency)}</span>
+              {/* Company leads as the headline identity, with location + salary
+                  as supporting detail, then the role title. */}
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+                {app.company?.name || '—'}
               </div>
+              <div style={{ fontSize: 12.5, color: 'var(--ink-3)', marginTop: 2 }}>
+                {app.location_text || '—'}
+                {formatMoney(app.salary_min, app.salary_max, app.salary_currency) !== '—' && (
+                  <> · <span className="mono">{formatMoney(app.salary_min, app.salary_max, app.salary_currency)}</span></>
+                )}
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.018em', marginTop: 5 }}>{app.role_title}</div>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 16, alignItems: 'center' }}>
@@ -583,7 +631,120 @@ export default function Drawer({ id, onClose }) {
           onCreateNew={() => { setResumePicker(false); nav('/resumes') }}
         />
       )}
+
+      {editing && (
+        <EditJobModal
+          app={app}
+          onSave={onSaveEdit}
+          onClose={() => setEditing(false)}
+        />
+      )}
     </>
+  )
+}
+
+// Edit the core job fields after a row already exists. Mirrors the manual
+// entry form in AddJobModal, pre-filled from the current application. Stage
+// isn't here — that's owned by the StageDropdown in the drawer header.
+function EditJobModal({ app, onSave, onClose }) {
+  const [busy, setBusy] = useState(false)
+  const [f, setF] = useState({
+    company: app.company?.name || '',
+    role_title: app.role_title || '',
+    location_text: app.location_text || '',
+    mode: app.mode || '',
+    salary_min: app.salary_min ?? null,
+    salary_max: app.salary_max ?? null,
+    salary_type: app.salary_type || 'base',
+    ote_min: app.ote_min ?? null,
+    ote_max: app.ote_max ?? null,
+    equity_text: app.equity_text || '',
+    source: app.source || '',
+  })
+
+  const save = async () => {
+    setBusy(true)
+    try { await onSave(f) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 540 }}>
+        <div className="modal-head">
+          <h3>Edit job</h3>
+          <button className="btn ghost icon" onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className="modal-body">
+          <EditField label="Company" value={f.company} onChange={v => setF({ ...f, company: v })} placeholder="Anthropic" />
+          <EditField label="Role title" value={f.role_title} onChange={v => setF({ ...f, role_title: v })} placeholder="Software Engineer" />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <EditField label="Location" value={f.location_text} onChange={v => setF({ ...f, location_text: v })} placeholder="New York, NY" />
+            <EditSelect label="Mode" value={f.mode} onChange={v => setF({ ...f, mode: v })}
+              options={[['', '—'], ['remote', 'Remote'], ['hybrid', 'Hybrid'], ['onsite', 'Onsite']]} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <EditMoney label="Base salary min" value={f.salary_min} onChange={v => setF({ ...f, salary_min: v })} />
+            <EditMoney label="Base salary max" value={f.salary_max} onChange={v => setF({ ...f, salary_max: v })} />
+            <EditSelect label="Type" value={f.salary_type || 'base'} onChange={v => setF({ ...f, salary_type: v })}
+              options={[['base', 'Base'], ['ote', 'OTE'], ['base+ote', 'Base + OTE']]} />
+          </div>
+          {(f.salary_type === 'ote' || f.salary_type === 'base+ote') && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <EditMoney label="OTE min" value={f.ote_min} onChange={v => setF({ ...f, ote_min: v })} />
+              <EditMoney label="OTE max" value={f.ote_max} onChange={v => setF({ ...f, ote_max: v })} />
+            </div>
+          )}
+          <EditField label="Equity" value={f.equity_text} onChange={v => setF({ ...f, equity_text: v })} placeholder="e.g. 0.1% equity or $50k RSUs" />
+          <EditSelect label="Source" value={f.source} onChange={v => setF({ ...f, source: v })}
+            options={[['', '—'], ['referral', 'Referral'], ['applied_direct', 'Direct apply'], ['recruiter_outbound', 'Recruiter outbound'], ['job_board', 'Job board'], ['network', 'Network']]} />
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6 }}>
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            <button className="btn indigo" disabled={busy || !f.company.trim() || !f.role_title.trim()} onClick={save}>
+              {busy ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EditField({ label, value, onChange, placeholder }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input type="text" value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
+    </div>
+  )
+}
+
+function EditSelect({ label, value, onChange, options }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </div>
+  )
+}
+
+// Mirrors AddJobModal's MoneyField: shows "$130,000" while emitting the raw
+// number (or null when empty).
+function EditMoney({ label, value, onChange, placeholder = 'not listed' }) {
+  const display = value == null || value === '' ? '' : `$${Number(value).toLocaleString('en-US')}`
+  const handle = (s) => {
+    const raw = s.replace(/[^\d.]/g, '')
+    if (!raw) return onChange(null)
+    const n = Number(raw)
+    onChange(Number.isFinite(n) ? n : null)
+  }
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input type="text" inputMode="numeric" value={display} onChange={e => handle(e.target.value)} placeholder={placeholder} />
+    </div>
   )
 }
 

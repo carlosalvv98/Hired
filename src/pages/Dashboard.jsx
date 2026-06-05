@@ -1,21 +1,24 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sparkles, Plus, FileText, X, Mail, ArrowRight, Check } from 'lucide-react'
+import { Sparkles, Plus, FileText, X, Mail, ArrowRight } from 'lucide-react'
 import AppBar from '../components/AppBar'
 import Logo from '../components/Logo'
+import { domainFromUrl } from '../lib/logos'
 import StatusPill from '../components/StatusPill'
+import TaskList from '../components/TaskList'
+import { formatSalary } from '../lib/stages'
 import AddJobModal from '../components/AddJobModal'
 import AddTaskModal from '../components/AddTaskModal'
 import { listApplications, listEmails, listTasks, listNudges, dismissNudge, updateTask, listCalendar } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
-import { relTime, shortDate, dayMonth } from '../lib/time'
+import { shortDate } from '../lib/time'
 import { addDays, startOfDay, endOfDay, format, isBefore } from 'date-fns'
 import toast from 'react-hot-toast'
 
 export default function Dashboard() {
   const { profile } = useAuth()
-  const { openDrawer } = useUI()
+  const { openDrawer, openEmail } = useUI()
   const nav = useNavigate()
   const [apps, setApps] = useState([])
   const [emails, setEmails] = useState([])
@@ -45,7 +48,7 @@ export default function Dashboard() {
   useEffect(() => { load() }, [])
 
   const counts = useMemo(() => {
-    const out = { applied: 0, screen: 0, iv: 0, final: 0, offer: 0, reject: 0, ghost: 0 }
+    const out = { new: 0, applied: 0, screen: 0, iv: 0, final: 0, offer: 0, reject: 0, ghost: 0 }
     apps.forEach(a => out[a.stage] = (out[a.stage] || 0) + 1)
     return out
   }, [apps])
@@ -65,8 +68,12 @@ export default function Dashboard() {
     { lbl: 'Offers',             num: offers, delta: offers ? '🎉' : 'none yet', tone: offers ? 'good' : 'muted' },
   ]
 
+  // "New" = saved but not yet applied to. "Applied" therefore excludes them
+  // (everything that has actually been sent out / progressed past 'new').
+  const appliedCount = total - (counts.new || 0)
   const FUNNEL = [
-    { stage: 'Applied', n: total, k: 'all' },
+    { stage: 'New', n: counts.new, k: 'new' },
+    { stage: 'Applied', n: appliedCount, k: 'applied' },
     { stage: 'Screen', n: counts.screen, k: 'screen' },
     { stage: 'Interview', n: counts.iv, k: 'iv' },
     { stage: 'Final', n: counts.final, k: 'final' },
@@ -108,9 +115,9 @@ export default function Dashboard() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
             <Funnel data={FUNNEL} total={total} />
             <KpiGrid items={KPIS} />
-            <ActiveAppsList loading={loading} apps={active} onOpen={openDrawer} />
+            <ActiveAppsList loading={loading} apps={active} onOpen={openDrawer} onOpenTracker={() => nav('/tracker')} />
             <RecentEmails loading={loading} emails={recent}
-              onOpenApp={(id) => id && openDrawer(id)}
+              onOpenEmail={(id) => id && openEmail(id)}
               onOpenInbox={() => nav('/inbox')} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -176,12 +183,14 @@ function KpiGrid({ items }) {
   )
 }
 
-function ActiveAppsList({ loading, apps, onOpen }) {
+function ActiveAppsList({ loading, apps, onOpen, onOpenTracker }) {
   return (
     <div className="card" style={{ padding: 0 }}>
       <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
         <h3 style={{ margin: 0, fontSize: 13 }}>Active applications</h3>
-        <span className="eyebrow muted" style={{ marginLeft: 'auto' }}>top {apps.length} in flight</span>
+        <span className="eyebrow muted">top {apps.length} in flight</span>
+        <span style={{ flex: 1 }} />
+        <button onClick={onOpenTracker} className="btn ghost tiny">Open tracker →</button>
       </div>
       {loading ? (
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -191,24 +200,44 @@ function ActiveAppsList({ loading, apps, onOpen }) {
         <div style={{ padding: 28, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12.5 }}>
           No active applications. <span style={{ color: 'var(--accent)' }}>Add one</span> from the rail →
         </div>
-      ) : apps.map(a => (
-        <div key={a.id} onClick={() => onOpen(a.id)}
-          style={{ display: 'grid', gridTemplateColumns: '36px 1fr 110px 160px 70px', gap: 12, alignItems: 'center', padding: '11px 18px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
-          <Logo co={a.company?.name} size={32} />
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{a.role_title}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{a.company?.name} · {a.location_text || '—'}</div>
+      ) : apps.map(a => {
+        const salary = formatSalary(a.salary_min, a.salary_max, a.salary_currency)
+        const meta = [a.company?.name, a.location_text, salary !== '—' ? salary : null].filter(Boolean).join(' · ')
+        const desc = jobBlurb(a)
+        const appliedAt = a.applied_at || a.created_at
+        return (
+          <div key={a.id} onClick={() => onOpen(a.id)}
+            style={{ display: 'grid', gridTemplateColumns: '32px minmax(0, 1.1fr) minmax(0, 1fr) auto auto', gap: 14, alignItems: 'center', padding: '11px 18px', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}>
+            <Logo co={a.company?.name} domain={a.company?.domain || domainFromUrl(a.jd_url)} size={32} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.role_title}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta}</div>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+              {desc}
+            </div>
+            <StatusPill s={a.stage} sm />
+            <div style={{ textAlign: 'right' }}>
+              <div className="eyebrow muted" style={{ fontSize: 9 }}>Applied on</div>
+              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>{shortDate(appliedAt)}</div>
+            </div>
           </div>
-          <StatusPill s={a.stage} />
-          <div style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{a.source_detail || '—'}</div>
-          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', textAlign: 'right' }}>{relTime(a.last_activity_at)}</div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
-function RecentEmails({ loading, emails, onOpenApp, onOpenInbox }) {
+// A short one-line blurb for an application, pulled from the stored JD text /
+// summaries. Empty string when we have nothing — the column just stays blank.
+function jobBlurb(a) {
+  const raw = (a.jd_text || a.jd_summary_role || a.jd_summary_company || '').trim()
+  if (!raw) return ''
+  const firstLine = raw.split('\n').map(s => s.trim()).filter(Boolean)[0] || ''
+  return firstLine.length > 120 ? firstLine.slice(0, 120).trimEnd() + '…' : firstLine
+}
+
+function RecentEmails({ loading, emails, onOpenEmail, onOpenInbox }) {
   return (
     <div className="card" style={{ padding: 0 }}>
       <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -224,17 +253,23 @@ function RecentEmails({ loading, emails, onOpenApp, onOpenInbox }) {
         <div style={{ padding: 28, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12.5 }}>
           No emails yet. Forward to your Hired address to start parsing.
         </div>
-      ) : emails.map((e, i) => (
-        <div key={e.id} onClick={() => e.linked_application_id && onOpenApp(e.linked_application_id)}
-          style={{ display: 'grid', gridTemplateColumns: '180px 1fr 110px 50px', gap: 12, alignItems: 'center', padding: '11px 18px', borderBottom: i < emails.length - 1 ? '1px solid var(--line)' : 'none', cursor: e.linked_application_id ? 'pointer' : 'default' }}>
-          <div style={{ fontSize: 12.5, fontWeight: e.is_unread ? 600 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {e.from_name || e.from_email}
+      ) : emails.map((e, i) => {
+        const snippet = (e.snippet || e.body_text || '').replace(/\s+/g, ' ').trim()
+        return (
+          <div key={e.id} onClick={() => onOpenEmail(e.id)}
+            style={{ display: 'grid', gridTemplateColumns: '64px 150px minmax(0, 1fr) auto', gap: 12, alignItems: 'center', padding: '11px 18px', borderBottom: i < emails.length - 1 ? '1px solid var(--line)' : 'none', cursor: 'pointer' }}>
+            <div className="mono muted" style={{ fontSize: 10.5 }}>{shortDate(e.received_at)}</div>
+            <div style={{ fontSize: 12.5, fontWeight: e.is_unread ? 600 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {e.from_name || e.from_email}
+            </div>
+            <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 12.5, color: e.is_unread ? 'var(--ink)' : 'var(--ink-2)' }}>{e.subject}</span>
+              {snippet && <span style={{ fontSize: 12, color: 'var(--ink-3)' }}> — {snippet}</span>}
+            </div>
+            <div style={{ textAlign: 'right' }}>{e.parse_json?.stage_signal && <StatusPill s={e.parse_json.stage_signal} sm />}</div>
           </div>
-          <div style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: e.is_unread ? 'var(--ink)' : 'var(--ink-2)' }}>{e.subject}</div>
-          <div>{e.parse_json?.stage_signal && <StatusPill s={e.parse_json.stage_signal} />}</div>
-          <div className="mono muted" style={{ fontSize: 10.5, textAlign: 'right' }}>{relTime(e.received_at)}</div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -341,29 +376,3 @@ function WeekAhead({ items }) {
   )
 }
 
-function TaskList({ tasks, overdue, onToggle, onAdd }) {
-  return (
-    <div className="card card-pad">
-      <div style={{ display: 'flex', alignItems: 'baseline' }}>
-        <h3 style={{ margin: 0 }}>Today's tasks <span className="count">{tasks.length}{overdue ? ` · ${overdue} overdue` : ''}</span></h3>
-        <span style={{ flex: 1 }} />
-        <button className="btn ghost tiny" onClick={onAdd}><Plus size={11} /></button>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 10 }}>
-        {tasks.length === 0 && <div className="muted" style={{ fontSize: 12 }}>No tasks. Quiet day. ✨</div>}
-        {tasks.map((t, i) => (
-          <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 4px', borderBottom: i < tasks.length - 1 ? '1px dashed var(--line)' : 'none', opacity: t.done ? 0.55 : 1 }}>
-            <button onClick={() => onToggle(t)} style={{
-              width: 16, height: 16, borderRadius: 4,
-              border: t.done ? 'none' : '1.5px solid var(--line-2)',
-              background: t.done ? 'var(--ink)' : '#fff',
-              color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>{t.done && <Check size={11} />}</button>
-            <span style={{ flex: 1, fontSize: 12.5, textDecoration: t.done ? 'line-through' : 'none', color: t.done ? 'var(--ink-3)' : 'var(--ink)' }}>{t.title}</span>
-            {t.due_at && <span className="mono muted" style={{ fontSize: 10.5 }}>{shortDate(t.due_at)}</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
