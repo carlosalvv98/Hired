@@ -8,7 +8,7 @@ import StatusPill from '../components/StatusPill'
 import TaskList from '../components/TaskList'
 import NudgeConfigModal from '../components/NudgeConfigModal'
 import { formatSalary } from '../lib/stages'
-import AddJobModal from '../components/AddJobModal'
+import AddJobModal, { JOB_URL_PLACEHOLDER } from '../components/AddJobModal'
 import AddTaskModal from '../components/AddTaskModal'
 import { listApplications, listEmails, listTasks, listNudges, dismissNudge, updateTask, listCalendar, listAllNudges, createNudges, setStage } from '../lib/api'
 import { generateNudges } from '../lib/nudgeEngine'
@@ -354,7 +354,7 @@ function QuickActions({ onAdd, onTask, onResume }) {
         className="parse-input"
         onSubmit={e => { e.preventDefault(); onParse() }}
       >
-        <input type="text" placeholder="https://jobs.lever.co/anthropic/forward-deployed-eng"
+        <input type="text" placeholder={JOB_URL_PLACEHOLDER}
           value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} />
         <button className="btn ai" type="submit" disabled={!url.trim()}>
           <Sparkles size={12} /> Auto-fill

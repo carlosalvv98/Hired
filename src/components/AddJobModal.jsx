@@ -21,13 +21,20 @@ import toast from 'react-hot-toast'
 // Default step ladder shown on every new application. Reorderable in the drawer.
 const DEFAULT_STEPS = ['Recruiter Screen', 'Interview 1', 'Interview 2', 'Final Interview', 'Offer']
 
-export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
+// Shared placeholder for the "paste a job URL" inputs (dashboard + tracker +
+// this modal) so they all read identically. Generic — no real company names.
+export const JOB_URL_PLACEHOLDER = 'https://jobs.lever.co/acme/account-executive'
+
+// Workplace (remote/hybrid/onsite) select options, with a "choose" prompt.
+const WORKPLACE_OPTIONS = [['', 'Choose workplace…'], ['remote', 'Remote'], ['hybrid', 'Hybrid'], ['onsite', 'Onsite']]
+
+export default function AddJobModal({ onClose, onCreated, defaultUrl = '', startManual = false }) {
   const { user } = useAuth()
   const { openUpgrade } = useUI()
   const { allowed: parsesAllowed, refresh: refreshLimit } = useLimit('job_parses')
   // If a URL was pre-supplied from the dashboard, jump straight into autofill —
   // don't re-prompt the user for the same URL we already have.
-  const [step, setStep] = useState(defaultUrl ? 'loading' : 'choose')
+  const [step, setStep] = useState(defaultUrl ? 'loading' : (startManual ? 'manual' : 'choose'))
   const [url, setUrl] = useState(defaultUrl)
   const [parsed, setParsed] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -40,7 +47,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
 
   // Manual fields — default stage is 'new' (saved, not yet applied to).
   const [m, setM] = useState({
-    company: '', role_title: '', location_text: '', mode: 'remote',
+    company: '', role_title: '', location_text: '', mode: '',
     salary_min: null, salary_max: null, salary_type: 'base',
     ote_min: null, ote_max: null, equity_text: '',
     stage: 'new', source: '',
@@ -157,7 +164,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
               <div className="parse-input">
                 <input
                   type="url" value={url} onChange={e => setUrl(e.target.value)}
-                  placeholder="https://jobs.lever.co/anthropic/forward-deployed-eng"
+                  placeholder={JOB_URL_PLACEHOLDER}
                   spellCheck={false}
                   disabled={filling}
                 />
@@ -210,8 +217,8 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
             <Field label="Role title" value={parsed.role_title || ''} onChange={v => setParsed({ ...parsed, role_title: v })} />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <Field label="Location" value={parsed.location_text || ''} onChange={v => setParsed({ ...parsed, location_text: v })} placeholder="NYC" />
-              <SelectField label="Mode" value={parsed.mode || ''} onChange={v => setParsed({ ...parsed, mode: v })}
-                options={[['','—'],['remote','Remote'],['hybrid','Hybrid'],['onsite','Onsite']]} />
+              <SelectField label="Workplace" value={parsed.mode || ''} onChange={v => setParsed({ ...parsed, mode: v })}
+                options={WORKPLACE_OPTIONS} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
               <MoneyField label="Base salary min" value={parsed.salary_min} onChange={v => setParsed({ ...parsed, salary_min: v })} />
@@ -255,12 +262,12 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '' }) {
 
         {step === 'manual' && (
           <div className="modal-body">
-            <Field label="Company *" value={m.company} onChange={v => setM({ ...m, company: v })} placeholder="Anthropic" />
-            <Field label="Role title *" value={m.role_title} onChange={v => setM({ ...m, role_title: v })} placeholder="Software Engineer" />
+            <Field label="Company *" value={m.company} onChange={v => setM({ ...m, company: v })} placeholder="Acme Inc" />
+            <Field label="Role title *" value={m.role_title} onChange={v => setM({ ...m, role_title: v })} placeholder="Account Executive" />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <Field label="Location" value={m.location_text} onChange={v => setM({ ...m, location_text: v })} placeholder="NYC" />
-              <SelectField label="Mode" value={m.mode} onChange={v => setM({ ...m, mode: v })}
-                options={[['remote','Remote'],['hybrid','Hybrid'],['onsite','Onsite']]} />
+              <Field label="Location" value={m.location_text} onChange={v => setM({ ...m, location_text: v })} placeholder="San Francisco, CA" />
+              <SelectField label="Workplace" value={m.mode} onChange={v => setM({ ...m, mode: v })}
+                options={WORKPLACE_OPTIONS} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
               <MoneyField label="Base salary min" value={m.salary_min} onChange={v => setM({ ...m, salary_min: v })} />

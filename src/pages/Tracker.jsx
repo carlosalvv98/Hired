@@ -8,7 +8,7 @@ import StatusPill from '../components/StatusPill'
 import { StageDropdown } from '../components/Drawer'
 import Rating from '../components/Rating'
 import IvProgress from '../components/IvProgress'
-import AddJobModal from '../components/AddJobModal'
+import AddJobModal, { JOB_URL_PLACEHOLDER } from '../components/AddJobModal'
 import { listApplications, updateApplication, setStage, autoSetStage, listSteps, listResumes, deleteApplication, createResume, uploadResumeFile, updateResume } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { parseResumeFromFile } from '../lib/agents/resumeImporter'
@@ -100,6 +100,9 @@ export default function Tracker() {
   const [filter, setFilter] = useState({})
   const [statusFilterOpen, setStatusFilterOpen] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [addUrl, setAddUrl] = useState('')
+  const [addSeedUrl, setAddSeedUrl] = useState('')
+  const [addManual, setAddManual] = useState(false)
   const [resumePickerFor, setResumePickerFor] = useState(null)
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [bulkStageOpen, setBulkStageOpen] = useState(false)
@@ -331,18 +334,41 @@ export default function Tracker() {
   return (
     <>
       <AppBar title="Tracker" crumbs={`tracker · ${view}${showArchived ? ' · archived' : ''}`} />
-      <PageActions right={
-        <>
-          <button className={`btn ghost tiny ${showArchived ? 'on' : ''}`}
-            onClick={() => setShowArchived(v => !v)}
-            title={showArchived ? 'Showing archived applications' : 'Show archived applications'}>
-            {showArchived ? 'Showing archived' : 'Show archived'}
-          </button>
-          <button className="btn primary tiny" onClick={() => setShowAdd(true)}>
-            <Plus size={13} />Add job
-          </button>
-        </>
-      } />
+      <PageActions
+        left={
+          <div className="tracker-addbar">
+            <div className="tracker-addbar-h">
+              <Sparkles size={13} color="var(--accent)" />
+              <span>Add a job in 1 click</span>
+              <span className="tracker-addbar-eyebrow">· paste link, AI fills the rest</span>
+            </div>
+            <form className="parse-input tracker-add"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const u = addUrl.trim()
+                if (!u) return
+                setAddSeedUrl(u); setAddManual(false); setShowAdd(true)
+              }}>
+              <input type="url" value={addUrl} onChange={e => setAddUrl(e.target.value)}
+                placeholder={JOB_URL_PLACEHOLDER} spellCheck={false} />
+              <button className="btn ai" type="submit" disabled={!addUrl.trim()}>
+                <Sparkles size={12} />Auto-fill
+              </button>
+            </form>
+          </div>
+        }
+        right={
+          <>
+            <button className={`btn ghost tiny ${showArchived ? 'on' : ''}`}
+              onClick={() => setShowArchived(v => !v)}
+              title={showArchived ? 'Showing archived applications' : 'Show archived applications'}>
+              {showArchived ? 'Showing archived' : 'Show archived'}
+            </button>
+            <button className="btn primary tiny" onClick={() => { setAddSeedUrl(''); setAddManual(true); setShowAdd(true) }}>
+              <Plus size={13} />Add manually
+            </button>
+          </>
+        } />
       <div className="tracker-tools">
         <div className="seg">
           <button className={view === 'table' ? 'on' : ''} onClick={() => setView('table')}><Table size={13} />Table</button>
@@ -432,7 +458,12 @@ export default function Tracker() {
         )}
       </div>
 
-      {showAdd && <AddJobModal onClose={() => setShowAdd(false)} onCreated={onCreated} />}
+      {showAdd && <AddJobModal
+        defaultUrl={addSeedUrl}
+        startManual={addManual}
+        onClose={() => { setShowAdd(false); setAddSeedUrl(''); setAddManual(false); setAddUrl('') }}
+        onCreated={onCreated}
+      />}
       {resumePickerFor && (
         <ResumePickerModal
           applicationId={resumePickerFor}
@@ -656,7 +687,7 @@ function TrackerTable({
           <tbody>
             {apps.map((a, rowIndex) => (
               <tr key={a.id}
-                className={`s-${a.stage} ${selectedIds.has(a.id) ? 'row-selected' : ''}`}
+                className={`s-${a.stage} ${selectedIds.has(a.id) ? 'row-selected' : ''} ${openStageId === a.id ? 'stage-open' : ''}`}
                 // Lift the row whose status menu is open above later rows —
                 // dimmed (reject/ghost/closed) rows create a stacking context
                 // via opacity that would otherwise bury the dropdown.

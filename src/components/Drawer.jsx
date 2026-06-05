@@ -489,7 +489,7 @@ export default function Drawer({ id, onClose }) {
                 <div className="eyebrow" style={{ marginBottom: 10 }}>Details</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <Fact label="Location" value={app.location_text || '—'} />
-                  <Fact label="Mode" value={app.mode || '—'} />
+                  <Fact label="Workplace" value={app.mode ? cap(app.mode) : '—'} />
                   <Fact
                     label={app.salary_type === 'ote' ? 'OTE' : 'Base salary'}
                     value={formatMoney(app.salary_min, app.salary_max, app.salary_currency)}
@@ -688,8 +688,8 @@ function EditJobModal({ app, onSave, onClose }) {
           <EditField label="Role title" value={f.role_title} onChange={v => setF({ ...f, role_title: v })} placeholder="Software Engineer" />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <EditField label="Location" value={f.location_text} onChange={v => setF({ ...f, location_text: v })} placeholder="New York, NY" />
-            <EditSelect label="Mode" value={f.mode} onChange={v => setF({ ...f, mode: v })}
-              options={[['', '—'], ['remote', 'Remote'], ['hybrid', 'Hybrid'], ['onsite', 'Onsite']]} />
+            <EditSelect label="Workplace" value={f.mode} onChange={v => setF({ ...f, mode: v })}
+              options={[['', 'Choose workplace…'], ['remote', 'Remote'], ['hybrid', 'Hybrid'], ['onsite', 'Onsite']]} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
             <EditMoney label="Base salary min" value={f.salary_min} onChange={v => setF({ ...f, salary_min: v })} />
