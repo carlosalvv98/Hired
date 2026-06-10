@@ -189,7 +189,7 @@ export async function reorderSteps(applicationId, orderedIds) {
 // Emails
 export async function listEmails({ folder = 'inbox', applicationId = null } = {}) {
   let q = supabase.from('emails')
-    .select('*, application:linked_application_id(id,role_title,company:companies(name))')
+    .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
     .order('received_at', { ascending: false });
   if (folder === 'archive') q = q.eq('folder', 'archive');
   else if (folder === 'starred') q = q.eq('is_starred', true);
@@ -204,7 +204,7 @@ export async function listEmails({ folder = 'inbox', applicationId = null } = {}
 
 export async function getEmail(id) {
   const { data, error } = await supabase.from('emails')
-    .select('*, application:linked_application_id(id,role_title,company:companies(name))')
+    .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
     .eq('id', id).single();
   if (error) throw error;
   return data;

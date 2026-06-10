@@ -108,6 +108,9 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
         // Persist the JD summaries into jd_text so they show in the drawer
         // and prep agents can read them.
         jd_text: [payload.jd_summary_company, payload.jd_summary_role].filter(Boolean).join('\n\n') || null,
+        // Only stamp the parse timestamp when this came from a successful AI
+        // parse (the review path), not manual entry.
+        jd_parsed_at: payload.jd_parsed ? new Date().toISOString() : null,
         applied_at: hasApplied ? new Date().toISOString() : null,
       }, user.id)
       await upsertSteps(app.id, DEFAULT_STEPS.map(t => ({ title: t, status: 'pending', learned_from_cohort: false })))
@@ -251,6 +254,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
                 jd_url: parsed.jd_url || url,
                 jd_summary_company: parsed.jd_summary_company,
                 jd_summary_role: parsed.jd_summary_role,
+                jd_parsed: true,
                 stage: 'new',
                 source: null,
               })}>

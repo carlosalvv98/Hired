@@ -6,6 +6,7 @@ import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
 import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2, Pencil } from 'lucide-react'
 import Logo from './Logo'
+import OutboundDraft from './OutboundDraft'
 import { domainFromUrl } from '../lib/logos'
 import StatusPill from './StatusPill'
 import { STAGES, STAGE_LABEL, STAGE_ORDER } from '../lib/stages'
@@ -60,6 +61,9 @@ export default function Drawer({ id, onClose }) {
   const [resumePicker, setResumePicker] = useState(false)
   const [stageMenuOpen, setStageMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
+  // Inline outbound-email drafter. Holds the chosen draftType (or null when
+  // closed); recipient is resolved from the application's contacts at render.
+  const [draft, setDraft] = useState(null)
   // Must live above the early-return below — React's rules of hooks require
   // every hook to be called on every render path.
   const dragIndex = useRef(null)
@@ -79,7 +83,7 @@ export default function Drawer({ id, onClose }) {
     }
   }
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { setDraft(null); load() }, [id])
 
   if (!app) {
     return (
@@ -297,6 +301,19 @@ export default function Drawer({ id, onClose }) {
 
   const hasJD = app.jd_text || app.jd_url
 
+  // Recipient prefill for the drafter: first linked contact that has an email.
+  const draftContact = contacts.find(c => c.contact?.email)?.contact || contacts[0]?.contact || null
+
+  // Open the inline drafter on the Emails tab with a given purpose.
+  const openDraft = (type) => { setDraft({ type }); setTab('emails') }
+
+  // Contextual quick-actions driven by the application's state.
+  const daysSinceActivity = app.last_activity_at
+    ? (Date.now() - new Date(app.last_activity_at).getTime()) / 86_400_000
+    : 0
+  const suggestThankYou = ['iv', 'final'].includes(app.stage)
+  const suggestFollowUp = ['applied', 'screen'].includes(app.stage) && daysSinceActivity > 14
+
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} />
@@ -378,6 +395,20 @@ export default function Drawer({ id, onClose }) {
         <div className="drawer-body">
           {tab === 'overview' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {(suggestThankYou || suggestFollowUp) && (
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {suggestThankYou && (
+                    <button className="btn ai tiny" onClick={() => openDraft('thank_you')}>
+                      <Sparkles size={12} />Send Thank You
+                    </button>
+                  )}
+                  {suggestFollowUp && (
+                    <button className="btn ai tiny" onClick={() => openDraft('follow_up')}>
+                      <Sparkles size={12} />Send Follow-Up
+                    </button>
+                  )}
+                </div>
+              )}
               <div>
                 <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
                   <div className="eyebrow">Resume</div>
@@ -530,6 +561,20 @@ export default function Drawer({ id, onClose }) {
 
           {tab === 'emails' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {draft ? (
+                <OutboundDraft
+                  application={app}
+                  draftType={draft.type}
+                  recipientEmail={draftContact?.email || ''}
+                  recipientName={draftContact?.name || ''}
+                  onClose={() => setDraft(null)}
+                />
+              ) : (
+                <button className="btn ai tiny" style={{ alignSelf: 'flex-start' }}
+                  onClick={() => openDraft('custom')}>
+                  <Sparkles size={12} />✍️ Draft an email
+                </button>
+              )}
               {emails.length === 0 && <div className="muted" style={{ fontSize: 12 }}>No emails linked yet.</div>}
               {emails.map(e => (
                 <div key={e.id} className="card card-pad" style={{ padding: 14 }}>
