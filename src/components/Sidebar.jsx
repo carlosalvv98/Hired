@@ -10,7 +10,7 @@ const ITEMS = [
   { to: '/inbox',       label: 'Inbox',       Icon: Inbox },
   { to: '/calendar',    label: 'Calendar',    Icon: Calendar },
   { to: '/resumes',     label: 'Resumes',     Icon: FileText },
-  { to: '/connections', label: 'Connections', Icon: Users },
+  { to: '/connections', label: 'Contacts & Connections', Icon: Users },
 ]
 
 export default function Sidebar({ counts = {} }) {

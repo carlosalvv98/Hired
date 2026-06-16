@@ -16,19 +16,26 @@ import { useUI } from '../hooks/useUI'
 import { confirmToast } from '../lib/confirmToast'
 import toast from 'react-hot-toast'
 
-// How each stage reads as a calendar activity line ("{verb} {role} at {co}").
+// Short stage label used in the compact calendar activity line
+// ("{label} · {company}") so long role titles don't overflow the cell.
 const STAGE_VERB = {
-  new: 'Saved', applied: 'Applied to', screen: 'Screening for',
-  iv: 'Interviewing for', final: 'Final round for', offer: 'Offer for',
-  accepted: 'Accepted', reject: 'Rejected from', ghost: 'Ghosted by',
+  new: 'Saved', applied: 'Applied', screen: 'Screening',
+  iv: 'Interview', final: 'Final round', offer: 'Offer',
+  accepted: 'Accepted', reject: 'Rejected', ghost: 'Ghosted',
   closed: 'Closed',
 }
 
-// One activity line for an application: its most recent stage + company.
+// Compact line for a calendar cell: stage + company (falls back to role).
 function activityLabel(a) {
-  const verb = STAGE_VERB[a.stage] || 'Updated'
+  const verb = STAGE_VERB[a.stage] || 'Update'
+  return `${verb} · ${a.company?.name || a.role_title}`
+}
+
+// Fuller text for the hover tooltip, where there's room for the role.
+function activityTitle(a) {
+  const verb = STAGE_VERB[a.stage] || 'Update'
   const co = a.company?.name ? ` at ${a.company.name}` : ''
-  return `${verb} ${a.role_title}${co}`
+  return `${verb} — ${a.role_title}${co}`
 }
 
 export default function CalendarPage() {
@@ -158,7 +165,7 @@ export default function CalendarPage() {
                       e.stopPropagation()
                       if (applied.length === 1 && applied[0].id) openDrawer(applied[0].id)
                     }}
-                    title={applied.map(activityLabel).join(', ')}>
+                    title={applied.map(activityTitle).join(', ')}>
                     ✓ {applied.length === 1
                       ? activityLabel(applied[0])
                       : `${applied.length} updates`}
@@ -250,10 +257,21 @@ function ApplicationsChart({ apps, events }) {
       if (a.created_at) bump(news, a.created_at)
       if (a.applied_at) bump(applied, a.applied_at)
     })
+    // Dedupe per application per day, so toggling a job in and out of a stage
+    // (or being created directly into one) counts as a single interview/offer
+    // for that day rather than one per stage transition.
+    const seenIv = new Set(), seenOffer = new Set()
     events.forEach(e => {
       const to = e.payload_json?.to
-      if (to === 'offer') bump(offers, e.at)
-      else if (INTERVIEW_STAGES.includes(to)) bump(interviews, e.at)
+      const day = format(new Date(e.at), 'yyyy-MM-dd')
+      const key = `${e.application_id}|${day}`
+      if (to === 'offer') {
+        if (seenOffer.has(key)) return
+        seenOffer.add(key); bump(offers, e.at)
+      } else if (INTERVIEW_STAGES.includes(to)) {
+        if (seenIv.has(key)) return
+        seenIv.add(key); bump(interviews, e.at)
+      }
     })
     return days.map(d => {
       const k = format(d, 'yyyy-MM-dd')

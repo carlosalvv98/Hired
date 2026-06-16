@@ -30,7 +30,7 @@ export default function Connections() {
 
   return (
     <>
-      <AppBar title="Connections" crumbs="people · auto-extracted" />
+      <AppBar title="Contacts & Connections" crumbs="people · auto-extracted" />
       <PageActions
         left={
           <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter…"

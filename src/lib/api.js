@@ -133,7 +133,7 @@ export async function listEvents(applicationId) {
 // Used by the calendar analytics chart to plot interviews/offers over time.
 export async function listStageEvents(sinceISO) {
   const { data, error } = await supabase.from('application_events')
-    .select('kind, payload_json, at')
+    .select('application_id, kind, payload_json, at')
     .eq('kind', 'stage_change')
     .gte('at', sinceISO)
     .order('at', { ascending: true });
@@ -233,8 +233,39 @@ export async function updateEmail(id, patch) {
   return data;
 }
 
+// All emails for an application — inbound AND outbound (sent) — newest first.
+// Unlike listEmails() this isn't scoped to the inbox folder, so manually
+// composed/sent emails show up in the drawer's email history too.
 export async function listEmailsForApp(applicationId) {
-  return listEmails({ applicationId });
+  const { data, error } = await supabase.from('emails')
+    .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
+    .eq('linked_application_id', applicationId)
+    .order('received_at', { ascending: false, nullsFirst: false });
+  if (error) throw error;
+  return data || [];
+}
+
+// Log an email the user wrote/sent from the drawer. We can't send through the
+// user's mailbox (compose opens their mail client via mailto), so this records
+// an outbound copy so it appears in the email history/timeline.
+export async function createOutboundEmail({ applicationId, to, subject, body }, userId) {
+  const text = (body || '').trim();
+  const { data, error } = await supabase.from('emails').insert({
+    user_id: userId,
+    mailbox_source: 'outbound',
+    from_name: 'You',
+    to_addresses: to ? [to] : null,
+    subject: subject?.trim() || null,
+    body_text: text || null,
+    snippet: text ? text.slice(0, 200) : null,
+    received_at: new Date().toISOString(),
+    linked_application_id: applicationId,
+    folder: 'sent',
+    parse_status: 'parsed',
+    is_unread: false,
+  }).select().single();
+  if (error) throw error;
+  return data;
 }
 
 // Tasks
