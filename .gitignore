@@ -28,3 +28,6 @@ dist-ssr
 # Supabase CLI scratch state
 supabase/.temp/
 
+
+# Internal handoff doc — keep out of the public repo
+HANDOFF.md
