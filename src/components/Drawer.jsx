@@ -9,17 +9,18 @@ import Logo from './Logo'
 import OutboundDraft from './OutboundDraft'
 import { domainFromUrl } from '../lib/logos'
 import StatusPill from './StatusPill'
-import { STAGES, STAGE_LABEL, STAGE_ORDER } from '../lib/stages'
+import { STAGES, STAGE_LABEL, STAGE_ORDER, SOURCE_OPTIONS } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
 import {
   getApplication, listEvents, listSteps, upsertSteps, setStepStatus,
   setStage, listEmailsForApp, listAppContacts, updateApplication,
   addStep as apiAddStep, deleteStep as apiDeleteStep, reorderSteps,
   listResumes, deleteApplication, createResume, uploadResumeFile,
-  findOrCreateCompany,
+  findOrCreateCompany, updateCompany,
 } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { parseResumeFromFile } from '../lib/agents/resumeImporter'
+import { summarizeJobDescription } from '../lib/agents/jobParser'
 import { trackUsage } from '../lib/ai'
 import toast from 'react-hot-toast'
 
@@ -47,7 +48,6 @@ const SUGGESTED_STEPS = ['Technical Interview', 'Case Study', 'Onsite', 'Hiring 
 export default function Drawer({ id, onClose }) {
   const nav = useNavigate()
   const { openUpgrade } = useUI()
-  const { allowed: prepAllowed } = useLimit('interview_prep')
   const { allowed: tailorAllowed } = useLimit('resume_tailoring')
   const [app, setApp] = useState(null)
   const [tab, setTab] = useState('overview')
@@ -247,9 +247,18 @@ export default function Drawer({ id, onClose }) {
     try {
       let company_id = app.company_id
       const newName = (form.company || '').trim()
+      const website = normalizeWebsite(form.company_website)
+      const webDomain = website ? domainFromUrl(website) : null
       if (newName && newName !== (app.company?.name || '')) {
-        const co = await findOrCreateCompany(newName)
+        const co = await findOrCreateCompany(newName, webDomain, website)
         company_id = co?.id || null
+      } else if (company_id && website !== (app.company?.website || null)) {
+        // Name unchanged but the website was edited — overwrite it directly
+        // (and backfill the logo domain if it isn't set yet).
+        await updateCompany(company_id, {
+          website,
+          ...(webDomain && !app.company?.domain ? { domain: webDomain } : {}),
+        })
       }
       const num = (v) => (v == null || v === '' ? null : Number(v))
       await updateApplication(app.id, {
@@ -264,6 +273,7 @@ export default function Drawer({ id, onClose }) {
         ote_max: num(form.ote_max),
         equity_text: form.equity_text?.trim() || null,
         source: form.source || null,
+        jd_text: form.jd_text?.trim() || null,
       })
       setEditing(false)
       toast.success('Changes saved')
@@ -360,14 +370,6 @@ export default function Drawer({ id, onClose }) {
             <button className="btn primary tiny" onClick={advance} disabled={['accepted', 'reject', 'ghost'].includes(app.stage) || STAGE_ORDER.indexOf(app.stage) === STAGE_ORDER.length - 1}>
               <ArrowRight size={12} />Move to next stage
             </button>
-            <button className="btn ai tiny" onClick={() => {
-              if (!guardLimit({ allowed: prepAllowed, feature: 'interview_prep', openUpgrade })) return
-              // Real prep-guide generation lands in a follow-up — for now
-              // the guard wires the gate without spending a Claude call.
-              toast('Generating prep guide…')
-            }}>
-              <Sparkles size={13} />Prep me
-            </button>
             {/* Status dropdown lives on the right end of the action row so
                 its position is identical for every job, regardless of how
                 long the role title runs. */}
@@ -385,7 +387,8 @@ export default function Drawer({ id, onClose }) {
 
         <div className="drawer-tabs">
           {TABS.map(({ k, n, accent }) => (
-            <button key={k} className={`${tab === k ? 'on' : ''} ${accent ? 'tab-accent' : ''}`} onClick={() => setTab(k)}>
+            <button key={k} className={`${tab === k ? 'on' : ''} ${k === 'prep' ? 'tab-prep' : accent ? 'tab-accent' : ''}`} onClick={() => setTab(k)}>
+              {k === 'prep' && <Sparkles size={12} />}
               {n}{k === 'emails' && emails.length ? ` · ${emails.length}` : ''}
               {k === 'contacts' && contacts.length ? ` · ${contacts.length}` : ''}
             </button>
@@ -532,6 +535,14 @@ export default function Drawer({ id, onClose }) {
                     <Fact label="OTE" value={formatMoney(app.ote_min, app.ote_max, app.salary_currency)} mono />
                   )}
                   {app.equity_text && <Fact label="Equity" value={app.equity_text} />}
+                  {app.company?.website && (
+                    <Fact label="Company website" value={
+                      <a href={app.company.website} target="_blank" rel="noreferrer"
+                        style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                        {app.company.website.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '')}
+                      </a>
+                    } />
+                  )}
                   <Fact label="Source" value={app.source ? cap(app.source.replace('_', ' ')) : '—'} />
                   <Fact label="Last activity" value={relTime(app.last_activity_at)} />
                 </div>
@@ -700,9 +711,12 @@ export default function Drawer({ id, onClose }) {
 // entry form in AddJobModal, pre-filled from the current application. Stage
 // isn't here — that's owned by the StageDropdown in the drawer header.
 function EditJobModal({ app, onSave, onClose }) {
+  const { user } = useAuth()
   const [busy, setBusy] = useState(false)
+  const [summarizing, setSummarizing] = useState(false)
   const [f, setF] = useState({
     company: app.company?.name || '',
+    company_website: app.company?.website || '',
     role_title: app.role_title || '',
     location_text: app.location_text || '',
     mode: app.mode || '',
@@ -713,12 +727,33 @@ function EditJobModal({ app, onSave, onClose }) {
     ote_max: app.ote_max ?? null,
     equity_text: app.equity_text || '',
     source: app.source || '',
+    jd_text: app.jd_text || '',
   })
 
   const save = async () => {
     setBusy(true)
     try { await onSave(f) }
     finally { setBusy(false) }
+  }
+
+  // Run the pasted/edited job description through AI and replace the field
+  // with the summary — same pipeline the add-job flow uses.
+  const summarize = async () => {
+    const raw = (f.jd_text || '').trim()
+    if (!raw || summarizing) return
+    setSummarizing(true)
+    try {
+      const s = await summarizeJobDescription(raw)
+      if (user?.id && s._usage) {
+        await trackUsage(user.id, 'job_parses', s._usage.model, s._usage.inputTokens, s._usage.outputTokens)
+      }
+      setF(prev => ({ ...prev, jd_text: [s.jd_summary_company, s.jd_summary_role].filter(Boolean).join('\n\n') }))
+      toast.success('Summarized')
+    } catch (e) {
+      toast.error(e.message || "Couldn't summarize that")
+    } finally {
+      setSummarizing(false)
+    }
   }
 
   return (
@@ -730,6 +765,7 @@ function EditJobModal({ app, onSave, onClose }) {
         </div>
         <div className="modal-body">
           <EditField label="Company" value={f.company} onChange={v => setF({ ...f, company: v })} placeholder="Anthropic" />
+          <EditField label="Company website" value={f.company_website} onChange={v => setF({ ...f, company_website: v })} placeholder="acme.com" />
           <EditField label="Role title" value={f.role_title} onChange={v => setF({ ...f, role_title: v })} placeholder="Software Engineer" />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <EditField label="Location" value={f.location_text} onChange={v => setF({ ...f, location_text: v })} placeholder="New York, NY" />
@@ -750,7 +786,27 @@ function EditJobModal({ app, onSave, onClose }) {
           )}
           <EditField label="Equity" value={f.equity_text} onChange={v => setF({ ...f, equity_text: v })} placeholder="e.g. 0.1% equity or $50k RSUs" />
           <EditSelect label="Source" value={f.source} onChange={v => setF({ ...f, source: v })}
-            options={[['', '—'], ['referral', 'Referral'], ['applied_direct', 'Direct apply'], ['recruiter_outbound', 'Recruiter outbound'], ['job_board', 'Job board'], ['network', 'Network']]} />
+            options={SOURCE_OPTIONS} />
+          <div className="field">
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <label style={{ margin: 0 }}>Job description</label>
+              <button className="btn ghost tiny" onClick={summarize}
+                disabled={summarizing || !f.jd_text.trim()} title="Summarize with AI">
+                {summarizing ? <><Loader2 size={11} className="spin" /> Summarizing…</> : <><Sparkles size={11} /> Summarize</>}
+              </button>
+            </div>
+            <textarea
+              value={f.jd_text}
+              onChange={e => setF({ ...f, jd_text: e.target.value })}
+              placeholder="Paste the job description, then Summarize — or edit the summary directly."
+              rows={5}
+              style={{
+                width: '100%', resize: 'vertical', minHeight: 84,
+                font: 'inherit', lineHeight: 1.5, padding: '8px 10px',
+                border: '1px solid var(--line)', borderRadius: 8, color: 'var(--ink)', background: '#fff',
+              }}
+            />
+          </div>
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6 }}>
             <button className="btn ghost" onClick={onClose}>Cancel</button>
             <button className="btn indigo" disabled={busy || !f.company.trim() || !f.role_title.trim()} onClick={save}>
@@ -761,6 +817,14 @@ function EditJobModal({ app, onSave, onClose }) {
       </div>
     </div>
   )
+}
+
+// Add https:// when the user typed a bare host so the stored website is a
+// usable link. Returns null for empty input.
+function normalizeWebsite(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`
 }
 
 function EditField({ label, value, onChange, placeholder }) {

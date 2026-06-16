@@ -91,10 +91,18 @@ export default function Dashboard() {
   const todayTasks = tasks.filter(t => !t.done)
   const overdue = tasks.filter(t => !t.done && t.due_at && isBefore(new Date(t.due_at), new Date()))
 
+  // Breakdown of the "Active interviews" number (screen + interviewing + final)
+  // so the subtext explains the count instead of showing a bare, confusing "0".
+  const ivBreakdown = [
+    counts.screen && `${counts.screen} screen`,
+    counts.iv && `${counts.iv} interviewing`,
+    counts.final && `${counts.final} final`,
+  ].filter(Boolean).join(' · ')
+
   const KPIS = [
     { lbl: 'Total apps',         num: total, delta: total ? `${total} active` : 'no apps yet', tone: total ? 'good' : 'muted' },
     { lbl: 'Response rate',      num: total ? `${responseRate}%` : '—', delta: total ? `${counts.screen + counts.iv + counts.final + counts.offer} responded` : '', tone: 'good' },
-    { lbl: 'Active interviews',  num: activeIv, delta: counts.iv ? `${counts.iv} in interview` : '0', tone: 'muted' },
+    { lbl: 'Active interviews',  num: activeIv, delta: activeIv ? ivBreakdown : 'none yet', tone: 'muted' },
     { lbl: 'Offers',             num: offers, delta: offers ? '🎉' : 'none yet', tone: offers ? 'good' : 'muted' },
   ]
 

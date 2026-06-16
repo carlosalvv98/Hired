@@ -12,10 +12,10 @@ import { findOrCreateCompany, createApplication, upsertSteps } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
-import { parseJobFromUrl } from '../lib/agents/jobParser'
+import { parseJobFromUrl, summarizeJobDescription } from '../lib/agents/jobParser'
 import { trackUsage } from '../lib/ai'
 import { guardLimit } from '../lib/limitGuard'
-import { STAGES } from '../lib/stages'
+import { STAGES, SOURCE_OPTIONS } from '../lib/stages'
 import toast from 'react-hot-toast'
 
 // Default step ladder shown on every new application. Reorderable in the drawer.
@@ -47,10 +47,10 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
 
   // Manual fields — default stage is 'new' (saved, not yet applied to).
   const [m, setM] = useState({
-    company: '', role_title: '', location_text: '', mode: '',
+    company: '', company_website: '', role_title: '', location_text: '', mode: '',
     salary_min: null, salary_max: null, salary_type: 'base',
     ote_min: null, ote_max: null, equity_text: '',
-    stage: 'new', source: '',
+    jd_text: '', stage: 'new', source: '',
   })
 
   const onAutofill = async (overrideUrl) => {
@@ -81,10 +81,41 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
     }
   }
 
+  // Manual save: if the user pasted a job description, summarize it with AI
+  // (same jd_summary_* shape as the URL parser) before saving. On failure we
+  // keep the raw paste so nothing is lost, and never block the save.
+  const saveManual = async () => {
+    setBusy(true)
+    let extra = {}
+    const raw = (m.jd_text || '').trim()
+    if (raw) {
+      try {
+        const s = await summarizeJobDescription(raw)
+        if (user?.id && s._usage) {
+          await trackUsage(user.id, 'job_parses', s._usage.model, s._usage.inputTokens, s._usage.outputTokens)
+          refreshLimit()
+        }
+        extra = { jd_summary_company: s.jd_summary_company, jd_summary_role: s.jd_summary_role, jd_parsed: true }
+      } catch {
+        toast.error("Couldn't summarize the description — saving it as written.")
+      }
+    }
+    // create() flips busy itself; it'll stay true through this call.
+    await create({
+      ...m,
+      company_domain: domainFromUrl(m.company_website),
+      company_website: normalizeUrl(m.company_website),
+      jd_raw: raw,
+      ...extra,
+    })
+  }
+
   const create = async (payload) => {
     setBusy(true)
     try {
-      const co = payload.company ? await findOrCreateCompany(payload.company, payload.company_domain || null) : null
+      const co = payload.company
+        ? await findOrCreateCompany(payload.company, payload.company_domain || null, payload.company_website || null)
+        : null
       const num = (v) => (v == null || v === '' ? null : Number(v))
       // Saving from a link doesn't mean you've applied — start as 'new' unless
       // the user explicitly chose otherwise in the manual form.
@@ -106,8 +137,9 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
         source: payload.source || null,
         jd_url: payload.jd_url || null,
         // Persist the JD summaries into jd_text so they show in the drawer
-        // and prep agents can read them.
-        jd_text: [payload.jd_summary_company, payload.jd_summary_role].filter(Boolean).join('\n\n') || null,
+        // and prep agents can read them. If summarization failed (manual add),
+        // fall back to the raw pasted description so nothing is lost.
+        jd_text: [payload.jd_summary_company, payload.jd_summary_role].filter(Boolean).join('\n\n') || payload.jd_raw || null,
         // Only stamp the parse timestamp when this came from a successful AI
         // parse (the review path), not manual entry.
         jd_parsed_at: payload.jd_parsed ? new Date().toISOString() : null,
@@ -267,6 +299,7 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
         {step === 'manual' && (
           <div className="modal-body">
             <Field label="Company *" value={m.company} onChange={v => setM({ ...m, company: v })} placeholder="Acme Inc" />
+            <Field label="Company website" value={m.company_website} onChange={v => setM({ ...m, company_website: v })} placeholder="acme.com" type="url" />
             <Field label="Role title *" value={m.role_title} onChange={v => setM({ ...m, role_title: v })} placeholder="Account Executive" />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <Field label="Location" value={m.location_text} onChange={v => setM({ ...m, location_text: v })} placeholder="San Francisco, CA" />
@@ -286,15 +319,22 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
               </div>
             )}
             <Field label="Equity" value={m.equity_text || ''} onChange={v => setM({ ...m, equity_text: v })} placeholder="e.g. 0.1% equity or $50k RSUs" />
+            <TextAreaField
+              label="Job description"
+              hint="Paste the full posting — AI summarizes it just like a linked job."
+              value={m.jd_text}
+              onChange={v => setM({ ...m, jd_text: v })}
+              placeholder="Paste the job description here (optional)…"
+            />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <SelectField label="Status" value={m.stage} onChange={v => setM({ ...m, stage: v })}
                 options={STAGES.map(s => [s.k, s.n])} />
               <SelectField label="Source" value={m.source} onChange={v => setM({ ...m, source: v })}
-                options={[['','—'],['referral','Referral'],['applied_direct','Direct apply'],['recruiter_outbound','Recruiter outbound'],['job_board','Job board'],['network','Network']]} />
+                options={SOURCE_OPTIONS} />
             </div>
             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 6 }}>
               <button className="btn ghost" onClick={() => setStep('choose')}>Back</button>
-              <button className="btn indigo" disabled={busy || !m.company || !m.role_title} onClick={() => create(m)}>
+              <button className="btn indigo" disabled={busy || !m.company || !m.role_title} onClick={saveManual}>
                 {busy ? 'Saving…' : 'Save to tracker'}
               </button>
             </div>
@@ -303,6 +343,26 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
       </div>
     </div>
   )
+}
+
+// Add https:// when the user typed a bare host (e.g. "acme.com") so the
+// stored website is a usable link. Returns null for empty input.
+function normalizeUrl(v) {
+  const s = String(v || '').trim()
+  if (!s) return null
+  return /^https?:\/\//i.test(s) ? s : `https://${s}`
+}
+
+// Pull the bare host (lowercase, no www/protocol/path) from a website URL so
+// it can backfill companies.domain, which drives logo lookups.
+function domainFromUrl(v) {
+  const url = normalizeUrl(v)
+  if (!url) return null
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase() || null
+  } catch {
+    return null
+  }
 }
 
 function Chip({ ok, label }) {
@@ -344,6 +404,31 @@ function MoneyField({ label, value, onChange, placeholder = 'not listed' }) {
     <div className="field">
       <label>{label}</label>
       <input type="text" inputMode="numeric" value={display} onChange={e => handle(e.target.value)} placeholder={placeholder} />
+    </div>
+  )
+}
+
+function TextAreaField({ label, value, onChange, placeholder, hint }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <textarea
+        value={value ?? ''}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={5}
+        style={{
+          width: '100%', resize: 'vertical', minHeight: 84,
+          font: 'inherit', lineHeight: 1.5, padding: '8px 10px',
+          border: '1px solid var(--line)', borderRadius: 8, color: 'var(--ink)',
+          background: '#fff',
+        }}
+      />
+      {hint && (
+        <div className="row" style={{ gap: 5, marginTop: 5, fontSize: 11, color: 'var(--accent-ink)' }}>
+          <Sparkles size={11} color="var(--accent)" /> {hint}
+        </div>
+      )}
     </div>
   )
 }

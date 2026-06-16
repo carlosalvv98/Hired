@@ -16,21 +16,23 @@ import { trackUsage } from '../lib/ai'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
-import { STAGES, STAGE_LABEL, formatSalary } from '../lib/stages'
+import { STAGES, STAGE_LABEL, STAGE_RANK, formatSalary } from '../lib/stages'
 import { relTime, shortDate } from '../lib/time'
 import { useUI } from '../hooks/useUI'
 import toast from 'react-hot-toast'
 
 const COLS = [
   { k: 'select',   label: '',                   w: 32,  align: 'center', fixed: true },
-  { k: 'star',     label: '★',                  w: 92,  align: 'left' },
+  // `align` controls the cell (value) alignment; `head` overrides the header
+  // alignment when it should differ (defaults to `align`).
+  { k: 'star',     label: '★',                  w: 72,  align: 'left' },
   { k: 'role',     label: 'Role / Company',     w: 260, align: 'left' },
-  { k: 'loc',      label: 'Location',           w: 90,  align: 'left' },
-  { k: 'mode',     label: 'Remote?',            w: 90,  align: 'left' },
-  { k: 'status',   label: 'Status',             w: 112, align: 'left' },
+  { k: 'loc',      label: 'Location',           w: 150, align: 'left',   head: 'center' },
+  { k: 'mode',     label: 'Remote?',            w: 90,  align: 'center' },
+  { k: 'status',   label: 'Status',             w: 112, align: 'left',   head: 'center' },
   { k: 'salary',   label: 'Salary range',       w: 130, align: 'left' },
   { k: 'progress', label: 'Interview progress', w: 220, align: 'left' },
-  { k: 'resume',   label: 'Resume',             w: 100, align: 'left' },
+  { k: 'resume',   label: 'Resume',             w: 100, align: 'center', head: 'left' },
   { k: 'applied',  label: 'Applied',            w: 90,  align: 'left' },
   { k: 'source',   label: 'Source',             w: 96,  align: 'left' },
   { k: 'last',     label: 'Last activity',      w: 100, align: 'right' },
@@ -43,7 +45,9 @@ const SORT_FIELD = {
   role:    a => (a.role_title || '').toLowerCase(),
   loc:     a => (a.location_text || '').toLowerCase(),
   mode:    a => a.mode || '',
-  status:  a => a.stage || '',
+  // Sort by pipeline order (matching the status dropdown), not alphabetically.
+  // Unknown stages sort to the end.
+  status:  a => (a.stage in STAGE_RANK ? STAGE_RANK[a.stage] : 999),
   salary:  a => a.salary_max || a.salary_min || 0,
   resume:  a => a.resume?.name?.toLowerCase() || '',
   applied: a => a.applied_at ? new Date(a.applied_at).getTime() : 0,
@@ -51,7 +55,7 @@ const SORT_FIELD = {
   last:    a => a.last_activity_at ? new Date(a.last_activity_at).getTime() : 0,
 }
 
-const STOP_PROP = new Set(['select', 'star', 'source', 'link', 'resume', 'status'])
+const STOP_PROP = new Set(['select', 'star', 'link', 'resume', 'status'])
 
 // Terminal "dead" stages — moving into one of these auto-archives the
 // application (and surfaces a toast) since there's nothing left to track.
@@ -109,14 +113,16 @@ export default function Tracker() {
   const [showArchived, setShowArchived] = useState(false)
   const [sort, setSort] = useState({ key: null, dir: 'asc' })
   const [params, setParams] = useSearchParams()
-  const { openDrawer } = useUI()
+  const { openDrawer, drawerId } = useUI()
   // Run the stale sweep only once per mount, on the live (non-archived) view.
   const autoSweepDone = useRef(false)
 
-  const load = async () => {
-    setLoading(true)
+  // `quiet` skips the loading skeleton — used for background refreshes (e.g.
+  // after the drawer closes) so the table updates in place without flashing.
+  const load = async ({ quiet = false } = {}) => {
+    if (!quiet) setLoading(true)
     try {
-      const a = await listApplications({ archived: showArchived })
+      const a = await listApplications({ includeArchived: showArchived })
       setApps(a)
       const stepsByApp = {}
       await Promise.all(a.map(async app => {
@@ -129,7 +135,7 @@ export default function Tracker() {
       }
     } catch (e) {
       toast.error('Could not load applications')
-    } finally { setLoading(false) }
+    } finally { if (!quiet) setLoading(false) }
   }
 
   // Auto-move idle in-flight apps to Ghosted / Closed, then offer one Undo.
@@ -173,6 +179,16 @@ export default function Tracker() {
   }
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [showArchived])
+
+  // Refresh the table when the drawer closes so edits made there (stage moves,
+  // steps, resume, job details, archive) show without a full page reload. We
+  // refresh quietly to avoid flashing the loading skeleton.
+  const prevDrawerId = useRef(drawerId)
+  useEffect(() => {
+    if (prevDrawerId.current && !drawerId) load({ quiet: true })
+    prevDrawerId.current = drawerId
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawerId])
 
   useEffect(() => {
     if (params.get('addjob') === '1') {
@@ -358,16 +374,9 @@ export default function Tracker() {
           </div>
         }
         right={
-          <>
-            <button className={`btn ghost tiny ${showArchived ? 'on' : ''}`}
-              onClick={() => setShowArchived(v => !v)}
-              title={showArchived ? 'Showing archived applications' : 'Show archived applications'}>
-              {showArchived ? 'Showing archived' : 'Show archived'}
-            </button>
-            <button className="btn primary tiny" onClick={() => { setAddSeedUrl(''); setAddManual(true); setShowAdd(true) }}>
-              <Plus size={13} />Add manually
-            </button>
-          </>
+          <button className="btn primary tiny" onClick={() => { setAddSeedUrl(''); setAddManual(true); setShowAdd(true) }}>
+            <Plus size={13} />Add manually
+          </button>
         } />
       <div className="tracker-tools">
         <div className="seg">
@@ -404,6 +413,11 @@ export default function Tracker() {
             </>
           )}
         </div>
+        <button className={`btn ghost tiny ${showArchived ? 'on' : ''}`}
+          onClick={() => setShowArchived(v => !v)}
+          title={showArchived ? 'Showing all applications, including archived' : 'Show all applications, including archived'}>
+          {showArchived ? 'Showing archived' : 'Show archived'}
+        </button>
         <span style={{ flex: 1 }} />
         <span className="mono muted" style={{ fontSize: 11 }}>{filtered.length} of {apps.length}</span>
         <div className="seg">
@@ -671,7 +685,7 @@ function TrackerTable({
                     onDragEnd={() => { setDragKey(null); setOverKey(null) }}
                     onClick={sortable ? () => onSort?.(c.k) : undefined}
                     className={`th-drag ${sortable ? 'th-sortable' : ''} ${active ? 'th-sorted' : ''} ${dragKey === c.k ? 'th-dragging' : ''} ${overKey === c.k && dragKey && dragKey !== c.k ? 'th-over' : ''}`}
-                    style={{ width: c.w, textAlign: c.align }}>
+                    style={{ width: c.w, textAlign: c.head || c.align }}>
                     <span className="th-inner">
                       <span className="th-grip"><GripVertical size={11} /></span>
                       <span>{c.label}</span>
@@ -728,7 +742,7 @@ function renderCell(k, a, steps, h) {
   const { onSetRating, onPickResume, stageOpen, onToggleStage, onCloseStage, onPickStage } = h
   switch (k) {
     case 'star':
-      return <Rating value={a.rating || 0} onChange={(v) => onSetRating(a.id, v)} />
+      return <Rating value={a.rating || 0} onChange={(v) => onSetRating(a.id, v)} size={11} />
     case 'role':
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -763,7 +777,11 @@ function renderCell(k, a, steps, h) {
         </button>
       )
     case 'source':
-      return <span className="src-link"><span className="who">{a.source_detail || (a.source ? cap(a.source.replace('_', ' ')) : '—')}</span></span>
+      // Plain text — there's no link target behind a source yet. (When the
+      // Connections section is built out, person-sources will link there.)
+      return <span style={{ fontSize: 11.5, color: a.source || a.source_detail ? 'var(--ink-2)' : 'var(--ink-3)' }}>
+        {a.source_detail || (a.source ? cap(a.source.replace('_', ' ')) : '—')}
+      </span>
     case 'last':     return <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{relTime(a.last_activity_at)}</span>
     case 'link':
       return a.jd_url ? (

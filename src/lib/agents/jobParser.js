@@ -55,6 +55,54 @@ CRITICAL RULES:
 - location_text and mode are INDEPENDENT. A remote role can still be tied to a place: 'Remote · New York, NY' → location_text = 'New York, NY' AND mode = 'remote'. Never put 'Remote' in location_text when a city/state/country is also named.
 - If you cannot determine a field with certainty, set it to null.`
 
+// System prompt for summarizing a pasted job description (manual add). Mirrors
+// the jd_summary_* fields produced by the URL parser so the drawer and prep
+// agents read the same shape regardless of how the job was added.
+const JD_SUMMARY_SYSTEM = `You are a job description summarizer for a job application tracking app. Given the raw text of a job posting, return ONLY a valid JSON object with NO markdown, no backticks, no explanation — just raw JSON:
+{
+  jd_summary_company: string (2-3 sentences about the company and team from the posting),
+  jd_summary_role: string (2-3 sentences about the role expectations, requirements and day-to-day)
+}
+
+CRITICAL RULES:
+- NEVER invent or assume any information not present in the text.
+- If the company isn't described, keep jd_summary_company brief and grounded in what the posting actually says.`
+
+/**
+ * Summarize a pasted job description into the same two summary fields the URL
+ * parser produces. Used by the manual add flow.
+ * @param {string} text raw job description
+ * @returns {Promise<{jd_summary_company:string, jd_summary_role:string, _usage:object}>}
+ */
+export async function summarizeJobDescription(text) {
+  const clean = String(text || '').trim()
+  if (!clean) throw new Error('Please paste a job description to summarize.')
+
+  const data = await callProxy({
+    systemPrompt: JD_SUMMARY_SYSTEM,
+    // Cap the input so an enormous paste can't blow the token budget.
+    userMessage: clean.slice(0, 20000),
+    model: MODELS.fast,
+    max_tokens: 1000,
+  })
+
+  const out = data?.content?.[0]?.text
+  if (typeof out !== 'string') throw new Error('AI did not return any content.')
+
+  let parsed
+  try {
+    parsed = extractJson(out)
+  } catch {
+    throw new Error('AI returned an unparseable response. Please try again.')
+  }
+  parsed._usage = {
+    inputTokens: data?.usage?.input_tokens || 0,
+    outputTokens: data?.usage?.output_tokens || 0,
+    model: MODELS.fast,
+  }
+  return parsed
+}
+
 export async function parseJobFromUrl(url) {
   if (!url) throw new Error('Please provide a job posting URL.')
 

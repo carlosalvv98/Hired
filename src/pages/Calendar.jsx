@@ -16,6 +16,21 @@ import { useUI } from '../hooks/useUI'
 import { confirmToast } from '../lib/confirmToast'
 import toast from 'react-hot-toast'
 
+// How each stage reads as a calendar activity line ("{verb} {role} at {co}").
+const STAGE_VERB = {
+  new: 'Saved', applied: 'Applied to', screen: 'Screening for',
+  iv: 'Interviewing for', final: 'Final round for', offer: 'Offer for',
+  accepted: 'Accepted', reject: 'Rejected from', ghost: 'Ghosted by',
+  closed: 'Closed',
+}
+
+// One activity line for an application: its most recent stage + company.
+function activityLabel(a) {
+  const verb = STAGE_VERB[a.stage] || 'Updated'
+  const co = a.company?.name ? ` at ${a.company.name}` : ''
+  return `${verb} ${a.role_title}${co}`
+}
+
 export default function CalendarPage() {
   const [cursor, setCursor] = useState(new Date())
   const [events, setEvents] = useState([])
@@ -59,13 +74,15 @@ export default function CalendarPage() {
   }
   useEffect(() => { loadAnalytics() }, [])
 
-  // Applications grouped by the day they were applied to — drives the
-  // "Applied to X" pill on each calendar cell.
+  // Applications in the pipeline, grouped by their most recent activity day —
+  // drives the per-cell pill. We anchor on last_activity_at (the latest stage
+  // move) so the cell reflects the most recent step, not just the apply date.
   const appliedByDay = useMemo(() => {
     const map = {}
     apps.forEach(a => {
       if (!a.applied_at) return
-      const k = format(new Date(a.applied_at), 'yyyy-MM-dd')
+      const day = a.last_activity_at || a.applied_at
+      const k = format(new Date(day), 'yyyy-MM-dd')
       if (!map[k]) map[k] = []
       map[k].push(a)
     })
@@ -141,10 +158,10 @@ export default function CalendarPage() {
                       e.stopPropagation()
                       if (applied.length === 1 && applied[0].id) openDrawer(applied[0].id)
                     }}
-                    title={applied.map(a => a.role_title).join(', ')}>
+                    title={applied.map(activityLabel).join(', ')}>
                     ✓ {applied.length === 1
-                      ? `Applied to ${applied[0].role_title}`
-                      : `Applied to ${applied.length} jobs`}
+                      ? activityLabel(applied[0])
+                      : `${applied.length} updates`}
                   </div>
                 )}
                 {ev.map(x => (

@@ -1,22 +1,36 @@
 import { supabase } from './supabase'
 
 // Companies (lazy create + lookup)
-export async function findOrCreateCompany(name, domain = null) {
+export async function findOrCreateCompany(name, domain = null, website = null) {
   if (!name) return null;
   const { data: existing } = await supabase
     .from('companies').select('*').ilike('name', name).maybeSingle();
   if (existing) {
-    // Backfill a domain we just learned about (used for logos) if the row
-    // doesn't already have one. Best-effort — don't fail the caller on error.
-    if (domain && !existing.domain) {
+    // Backfill a domain/website we just learned about (domain drives logos)
+    // if the row doesn't already have them. Best-effort — don't fail the
+    // caller on error.
+    const patch = {};
+    if (domain && !existing.domain) patch.domain = domain;
+    if (website && !existing.website) patch.website = website;
+    if (Object.keys(patch).length) {
       const { data: updated } = await supabase
-        .from('companies').update({ domain }).eq('id', existing.id).select().single();
+        .from('companies').update(patch).eq('id', existing.id).select().single();
       return updated || existing;
     }
     return existing;
   }
   const { data, error } = await supabase
-    .from('companies').insert({ name, domain }).select().single();
+    .from('companies').insert({ name, domain, website }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// Update a company row directly (e.g. editing its website/domain from the
+// drawer). Unlike findOrCreateCompany's backfill, this overwrites.
+export async function updateCompany(id, patch) {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from('companies').update(patch).eq('id', id).select().single();
   if (error) throw error;
   return data;
 }
@@ -28,11 +42,13 @@ export async function listCompanies() {
 }
 
 // Applications
-export async function listApplications({ stage, archived = false } = {}) {
+// Pass `includeArchived: true` to return ALL applications (live + archived);
+// otherwise the result is filtered to `archived` (default: live only).
+export async function listApplications({ stage, archived = false, includeArchived = false } = {}) {
   let q = supabase.from('applications')
     .select('*, company:companies(*), resume:resumes(id,name,version)')
-    .eq('archived', archived)
     .order('last_activity_at', { ascending: false });
+  if (!includeArchived) q = q.eq('archived', archived);
   if (stage) q = q.eq('stage', stage);
   const { data, error } = await q;
   if (error) throw error;

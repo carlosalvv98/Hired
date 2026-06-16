@@ -20,13 +20,27 @@ export const STAGE_LABEL = {
 // Stages a user advances through linearly via "Move to next stage".
 export const STAGE_ORDER = ['new', 'applied', 'screen', 'iv', 'final', 'offer', 'accepted'];
 
+// Logical rank of each stage, matching the order they appear in the status
+// dropdown. Used to sort the tracker by status in pipeline order (not
+// alphabetically). Unknown stages sort to the end.
+export const STAGE_RANK = STAGES.reduce((m, s, i) => { m[s.k] = i; return m; }, {});
+
 export const SOURCES = [
   { k: 'referral',          n: 'Referral' },
+  { k: 'connection',        n: 'Connection' },
   { k: 'applied_direct',    n: 'Direct apply' },
   { k: 'recruiter_outbound',n: 'Recruiter outbound' },
+  { k: 'recruiter_inbound', n: 'Recruiter inbound' },
   { k: 'job_board',         n: 'Job board' },
   { k: 'network',           n: 'Network' },
 ];
+
+// Sources that point at a specific person — these are where the tracker ties
+// back into the Connections section (a referrer / recruiter / contact).
+export const PERSON_SOURCES = new Set(['referral', 'connection', 'recruiter_outbound', 'recruiter_inbound', 'network']);
+
+// Dropdown options for a Source <select>, including the leading "none" row.
+export const SOURCE_OPTIONS = [['', '—'], ...SOURCES.map(s => [s.k, s.n])];
 
 export const MODES = [
   { k: 'remote',  n: 'Remote' },
