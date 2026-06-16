@@ -3,7 +3,8 @@
  *
  * Exports:
  *   - MODELS         — model id constants (fast / smart)
- *   - TIER_LIMITS    — per-tier feature quotas (-1 unlimited, 0 locked)
+ *   - getTierLimits  — load per-tier feature quotas from the `tier_limits` DB
+ *                      table (-1 unlimited, 0 locked); the single source of truth
  *   - callClaude     — POST to Anthropic /v1/messages and return text
  *   - trackUsage     — insert a row into the `ai_usage` table (never throws)
  *   - checkLimit     — return { allowed, remaining, limit } for a feature/tier
@@ -25,76 +26,50 @@ export const MODELS = {
   smart: 'claude-sonnet-4-6',
 }
 
-// -1 = unlimited, 0 = locked
-export const TIER_LIMITS = {
-  free: {
-    job_parses: 5,          // monthly
-    email_parses: 10,       // monthly
-    email_replies: 3,       // lifetime
-    ats_scores: 3,          // monthly
-    resume_tailoring: 1,    // lifetime
-    resume_imports: 1,      // lifetime — AI parsing of an uploaded resume PDF
-    resume_versions: 3,     // total active
-    interview_prep: 2,      // monthly
-    prep_organize: 5,       // monthly — AI organize/summarize a job's notes
-    prep_chat: 10,          // monthly — Ask AI over a job's prep
-    community_intel: 0,     // locked
-    ask_ai_per_day: 5,      // daily
-    nudges: 0,              // locked — AI nudges are a Pro/Elite feature
-    peer_comparisons: 0,    // locked
-    job_match_score: 0,     // locked
-  },
-  pro: {
-    job_parses: -1,
-    email_parses: -1,
-    email_replies: 20,
-    ats_scores: -1,
-    resume_tailoring: 5,
-    resume_imports: 10,
-    resume_versions: 10,
-    interview_prep: 10,
-    prep_organize: -1,
-    prep_chat: -1,
-    community_intel: 0,
-    ask_ai_per_day: -1,
-    nudges: 20,             // monthly
-    peer_comparisons: 0,
-    job_match_score: -1,
-  },
-  elite: {
-    job_parses: -1,
-    email_parses: -1,
-    email_replies: -1,
-    ats_scores: -1,
-    resume_tailoring: -1,
-    resume_imports: -1,
-    resume_versions: -1,
-    interview_prep: -1,
-    prep_organize: -1,
-    prep_chat: -1,
-    community_intel: -1,
-    ask_ai_per_day: -1,
-    nudges: -1,
-    peer_comparisons: -1,
-    job_match_score: -1,
-  },
+// Tier limits live in the `tier_limits` DB table (one row per tier+feature:
+// limit_value -1 = unlimited, 0 = locked, plus a reset `period`). The table is
+// the single source of truth — edit limits there, no deploy needed. We load it
+// once and cache it for the session.
+//
+// Maps the table's `period` vocabulary to what periodStart() understands.
+// resume_versions / nudges are "total active" counts the caller computes from
+// other tables, not from ai_usage — they map to 'all' here harmlessly.
+const PERIOD_MAP = { daily: 'day', monthly: 'month', lifetime: 'all', total_active: 'all' }
+
+let _tierLimitsPromise = null
+
+/**
+ * Load all tier limits from the DB, shaped as
+ * `{ [tier]: { [feature]: { limit:number, period:string } } }`.
+ * Cached for the session; falls back to refetch if the load failed/was empty.
+ */
+export async function getTierLimits() {
+  if (_tierLimitsPromise) return _tierLimitsPromise
+  _tierLimitsPromise = (async () => {
+    const { data, error } = await supabase
+      .from('tier_limits')
+      .select('tier, feature, limit_value, period')
+    if (error || !data || data.length === 0) {
+      // Don't cache a failed/empty load — let the next call retry.
+      _tierLimitsPromise = null
+      if (error) console.warn('getTierLimits failed:', error.message)
+      return {}
+    }
+    const map = {}
+    for (const r of data) {
+      (map[r.tier] ||= {})[r.feature] = {
+        limit: r.limit_value,
+        period: PERIOD_MAP[r.period] || 'month',
+      }
+    }
+    return map
+  })()
+  return _tierLimitsPromise
 }
 
-// Which features reset monthly vs. daily vs. lifetime — used by checkLimit.
-const PERIOD_BY_FEATURE = {
-  job_parses: 'month',
-  email_parses: 'month',
-  ats_scores: 'month',
-  interview_prep: 'month',
-  prep_organize: 'month',
-  prep_chat: 'month',
-  ask_ai_per_day: 'day',
-  email_replies: 'all',
-  resume_tailoring: 'all',
-  resume_imports: 'all',
-  // resume_versions / nudges are "total active" — caller computes those
-  // from the resumes / ai_nudges tables, not from ai_usage history.
-}
+// Drop the cached limits so the next checkLimit re-reads the table (use after
+// editing limits, e.g. from an admin screen).
+export function clearTierLimitsCache() { _tierLimitsPromise = null }
 
 // Resolves to the deployed Edge Function URL.
 // e.g. https://ihwxptpvgrnazcbciyzw.supabase.co/functions/v1/claude-proxy
@@ -233,14 +208,16 @@ function periodStart(period) {
 }
 
 export async function checkLimit(userId, feature, tier = 'free') {
-  const tierLimits = TIER_LIMITS[tier] || TIER_LIMITS.free
-  const limit = tierLimits[feature]
+  const all = await getTierLimits()
+  const entry = (all[tier] || all.free || {})[feature]
+  const limit = entry ? entry.limit : null
 
   if (limit === -1) return { allowed: true, remaining: -1, limit: -1 }
   if (limit === 0)  return { allowed: false, remaining: 0, limit: 0 }
+  // Unknown feature (not in the table) or limits unavailable → fail open.
   if (limit == null) return { allowed: true, remaining: -1, limit: -1 }
 
-  const period = PERIOD_BY_FEATURE[feature] || 'month'
+  const period = entry.period || 'month'
   const since = periodStart(period)
 
   let q = supabase

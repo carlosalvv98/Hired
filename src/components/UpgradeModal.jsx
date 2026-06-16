@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react'
 import { X, Check, Sparkles } from 'lucide-react'
-import { TIER_LIMITS } from '../lib/ai'
+import { getTierLimits } from '../lib/ai'
 import { useAuth } from '../hooks/useAuth'
 
 // Order matters — drives the pricing-card layout left-to-right. "university"
@@ -32,6 +33,7 @@ const FEATURE_ROWS = [
 // Render a tier_limits cell value in human terms. Never expose token counts.
 function renderLimit(value) {
   if (value === -1) return <span className="upgrade-cell-unlim">Unlimited</span>
+  if (value == null) return <span className="upgrade-cell-locked">—</span>  // 0/locked or still loading
   if (value === 0)  return <span className="upgrade-cell-locked">—</span>
   return <span className="upgrade-cell-num">{value}</span>
 }
@@ -39,6 +41,9 @@ function renderLimit(value) {
 export default function UpgradeModal({ feature, onClose }) {
   const { user } = useAuth()
   const currentPlan = user?.plan || 'free'
+  // Limits come from the tier_limits table (single source of truth).
+  const [limits, setLimits] = useState({})
+  useEffect(() => { getTierLimits().then(setLimits).catch(() => {}) }, [])
 
   const onUpgrade = (planKey) => {
     // Payment wiring not implemented yet — see #payments-roadmap.
@@ -124,7 +129,7 @@ export default function UpgradeModal({ feature, onClose }) {
                         <td key={p.k} className={p.k === currentPlan ? 'col-current' : ''}>
                           {p.k === 'university'
                             ? <span className="upgrade-cell-locked">—</span>
-                            : renderLimit(TIER_LIMITS[p.k]?.[r.feature])}
+                            : renderLimit(limits[p.k]?.[r.feature]?.limit)}
                         </td>
                       ))}
                     </tr>

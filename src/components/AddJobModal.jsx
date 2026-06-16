@@ -88,7 +88,9 @@ export default function AddJobModal({ onClose, onCreated, defaultUrl = '', start
     setBusy(true)
     let extra = {}
     const raw = (m.jd_text || '').trim()
-    if (raw) {
+    // Summarizing spends a job_parse — gate it on the limit. If they're out,
+    // skip the AI step and just save the raw description (never block the save).
+    if (raw && guardLimit({ allowed: parsesAllowed, feature: 'job_parses', openUpgrade })) {
       try {
         const s = await summarizeJobDescription(raw)
         if (user?.id && s._usage) {
