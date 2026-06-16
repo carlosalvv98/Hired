@@ -7,6 +7,7 @@ import { confirmToast } from '../lib/confirmToast'
 import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2, Pencil, Mail, Send, Copy } from 'lucide-react'
 import Logo from './Logo'
 import OutboundDraft from './OutboundDraft'
+import JobPrep from './JobPrep'
 import { domainFromUrl } from '../lib/logos'
 import StatusPill from './StatusPill'
 import { STAGES, STAGE_LABEL, STAGE_ORDER, SOURCE_OPTIONS } from '../lib/stages'
@@ -228,6 +229,8 @@ export default function Drawer({ id, onClose }) {
     setSavingNotes(true)
     try {
       await updateApplication(app.id, { notes_md: html })
+      // Keep local app state fresh so the prep panel organizes the latest notes.
+      setApp(prev => ({ ...prev, notes_md: html }))
       toast.success('Notes saved')
     } catch { toast.error('Save failed') }
     finally { setSavingNotes(false) }
@@ -689,11 +692,21 @@ export default function Drawer({ id, onClose }) {
           )}
 
           {tab === 'notes' && (
-            <RichNotes
-              initialHtml={notes}
-              saving={savingNotes}
-              onSave={(html) => { setNotes(html); return saveNotesHtml(html) }}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 8 }}>Notes</div>
+                <RichNotes
+                  initialHtml={notes}
+                  saving={savingNotes}
+                  onSave={(html) => { setNotes(html); return saveNotesHtml(html) }}
+                />
+              </div>
+              <JobPrep
+                app={app}
+                emails={emails}
+                onAppPatched={(patch) => setApp(prev => ({ ...prev, ...patch }))}
+              />
+            </div>
           )}
 
           {tab === 'prep' && (

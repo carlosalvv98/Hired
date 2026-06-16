@@ -36,6 +36,8 @@ export const TIER_LIMITS = {
     resume_imports: 1,      // lifetime — AI parsing of an uploaded resume PDF
     resume_versions: 3,     // total active
     interview_prep: 2,      // monthly
+    prep_organize: 5,       // monthly — AI organize/summarize a job's notes
+    prep_chat: 10,          // monthly — Ask AI over a job's prep
     community_intel: 0,     // locked
     ask_ai_per_day: 5,      // daily
     nudges: 0,              // locked — AI nudges are a Pro/Elite feature
@@ -51,6 +53,8 @@ export const TIER_LIMITS = {
     resume_imports: 10,
     resume_versions: 10,
     interview_prep: 10,
+    prep_organize: -1,
+    prep_chat: -1,
     community_intel: 0,
     ask_ai_per_day: -1,
     nudges: 20,             // monthly
@@ -66,6 +70,8 @@ export const TIER_LIMITS = {
     resume_imports: -1,
     resume_versions: -1,
     interview_prep: -1,
+    prep_organize: -1,
+    prep_chat: -1,
     community_intel: -1,
     ask_ai_per_day: -1,
     nudges: -1,
@@ -80,6 +86,8 @@ const PERIOD_BY_FEATURE = {
   email_parses: 'month',
   ats_scores: 'month',
   interview_prep: 'month',
+  prep_organize: 'month',
+  prep_chat: 'month',
   ask_ai_per_day: 'day',
   email_replies: 'all',
   resume_tailoring: 'all',

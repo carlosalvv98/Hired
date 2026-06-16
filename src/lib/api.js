@@ -483,6 +483,82 @@ export async function unlinkContact(applicationId, contactId) {
   if (error) throw error;
 }
 
+// Prep — question bank (reusable questions, with `is_standard` ones that
+// auto-apply to every job).
+export async function listQuestionBank() {
+  const { data, error } = await supabase.from('question_bank')
+    .select('*').order('is_standard', { ascending: false }).order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createQuestion(payload, userId) {
+  const { data, error } = await supabase.from('question_bank')
+    .insert({ ...payload, user_id: userId }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateQuestion(id, patch) {
+  const { data, error } = await supabase.from('question_bank')
+    .update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteQuestion(id) {
+  const { error } = await supabase.from('question_bank').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Prep — per-application questions (with the response you got back).
+export async function listAppQuestions(applicationId) {
+  const { data, error } = await supabase.from('application_questions')
+    .select('*').eq('application_id', applicationId).order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function addAppQuestion(payload, userId) {
+  const { data, error } = await supabase.from('application_questions')
+    .insert({ ...payload, user_id: userId }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateAppQuestion(id, patch) {
+  const { data, error } = await supabase.from('application_questions')
+    .update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteAppQuestion(id) {
+  const { error } = await supabase.from('application_questions').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Lazily materialize the user's `is_standard` bank questions into a job's
+// question list (skipping ones already present), then return the full list.
+export async function ensureStandardQuestions(applicationId, userId) {
+  const [existing, bank] = await Promise.all([
+    listAppQuestions(applicationId),
+    listQuestionBank(),
+  ]);
+  const haveSourceIds = new Set(existing.map(q => q.source_question_id).filter(Boolean));
+  const missing = bank.filter(b => b.is_standard && !haveSourceIds.has(b.id));
+  if (missing.length) {
+    const rows = missing.map(b => ({
+      application_id: applicationId, user_id: userId,
+      source_question_id: b.id, text: b.text,
+    }));
+    const { error } = await supabase.from('application_questions').insert(rows);
+    if (error) throw error;
+    return listAppQuestions(applicationId);
+  }
+  return existing;
+}
+
 // Nudges
 export async function listNudges() {
   const { data, error } = await supabase.from('ai_nudges')

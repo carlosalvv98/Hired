@@ -13,6 +13,7 @@ import Calendar from './pages/Calendar'
 import Resumes from './pages/Resumes'
 import ResumeEditor from './pages/ResumeEditor'
 import Connections from './pages/Connections'
+import Prep from './pages/Prep'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="resumes" element={<Resumes />} />
             <Route path="resumes/:id" element={<ResumeEditor />} />
             <Route path="connections" element={<Connections />} />
+            <Route path="prep" element={<Prep />} />
             <Route path="settings" element={<Settings />} />
             <Route path="integrations" element={<Settings />} />
           </Route>

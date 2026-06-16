@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Home, Layers, Inbox, Calendar, FileText, Users, Settings, Plug, LogOut, Sparkles } from 'lucide-react'
+import { Home, Layers, Inbox, Calendar, FileText, Users, Settings, Plug, LogOut, Sparkles, GraduationCap } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import toast from 'react-hot-toast'
@@ -11,6 +11,7 @@ const ITEMS = [
   { to: '/calendar',    label: 'Calendar',    Icon: Calendar },
   { to: '/resumes',     label: 'Resumes',     Icon: FileText },
   { to: '/connections', label: 'Contacts & Connections', Icon: Users },
+  { to: '/prep',        label: 'Prep',        Icon: GraduationCap },
 ]
 
 export default function Sidebar({ counts = {} }) {
