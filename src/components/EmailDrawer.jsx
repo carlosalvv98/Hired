@@ -3,6 +3,7 @@ import { X, Sparkles, Link as LinkIcon, ArrowRight } from 'lucide-react'
 import Logo from './Logo'
 import StatusPill from './StatusPill'
 import EmailReplies from './EmailReplies'
+import { EmailActions, EmailAttachments } from './EmailActions'
 import { getEmail, updateEmail } from '../lib/api'
 import { useUI } from '../hooks/useUI'
 import { relTime } from '../lib/time'
@@ -102,6 +103,12 @@ export default function EmailDrawer({ id, onClose }) {
 
           <div style={{ fontSize: 13.5, lineHeight: 1.7, color: 'var(--ink)', whiteSpace: 'pre-line' }}>
             {email.body_text || email.snippet || '—'}
+          </div>
+
+          <EmailAttachments email={email} />
+
+          <div className="row" style={{ gap: 6, marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+            <EmailActions email={email} />
           </div>
 
           <EmailReplies email={email} />

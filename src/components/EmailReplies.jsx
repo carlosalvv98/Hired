@@ -47,11 +47,11 @@ const replyCache = new Map()
 
 // AI-generated email replies. Each generation is user-triggered (tap a tone
 // pill), costs one `email_replies` credit, and produces a single editable
-// draft. "Use" opens the user's mail client pre-filled. Shared by the Inbox
-// pane and the EmailDrawer.
+// draft. "Use" loads the draft into the floating composer (rich text +
+// attachments + real send). Shared by the Inbox pane and the EmailDrawer.
 export default function EmailReplies({ email }) {
   const { user } = useAuth()
-  const { openUpgrade } = useUI()
+  const { openUpgrade, openCompose } = useUI()
   const { allowed, used, limit, refresh } = useLimit('email_replies')
 
   const [tone, setTone] = useState(null)
@@ -132,11 +132,19 @@ export default function EmailReplies({ email }) {
     }
   }
 
+  // Load the generated reply into the floating composer (pre-filled, with the
+  // original quoted below) so the user can format, attach, and send for real.
   const onUse = () => {
     if (!reply.trim()) return
-    const subject = email.subject?.startsWith('Re:') ? email.subject : `Re: ${email.subject || ''}`
-    const body = encodeURIComponent(reply)
-    window.location.href = `mailto:${email.from_email}?subject=${encodeURIComponent(subject)}&body=${body}`
+    const subject = /^re:/i.test(email.subject || '') ? email.subject : `Re: ${email.subject || ''}`
+    openCompose({
+      mode: 'reply',
+      originalEmail: email,
+      prefillBody: reply,
+      prefillTo: email.from_email,
+      prefillSubject: subject,
+      applicationId: email.linked_application_id,
+    })
   }
 
   const creditLabel = unlimited

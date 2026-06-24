@@ -10,8 +10,8 @@ import { relTime } from '../lib/time'
 
 // Outbound email drafter — thank-you notes, follow-ups, and cold outreach the
 // USER sends to a recruiter (as opposed to EmailReplies.jsx, which drafts
-// replies to inbound mail). Shares the same 'email_replies' credit pool, the
-// same tone pills, and the same single-generation + editable + mailto pattern.
+// replies to inbound mail). Shares the same 'email_replies' credit pool and
+// tone pills; "Use" hands the draft off to the floating composer for sending.
 
 const PURPOSES = {
   thank_you:    { label: '🙏 Thank You',    hint: 'post-interview gratitude' },
@@ -65,7 +65,7 @@ export default function OutboundDraft({
 }) {
   const app = application || {}
   const { user } = useAuth()
-  const { openUpgrade } = useUI()
+  const { openUpgrade, openCompose } = useUI()
   const { allowed, used, limit, refresh } = useLimit('email_replies')
 
   const cacheKey = `${app.id || 'none'}:${draftType}`
@@ -153,11 +153,17 @@ export default function OutboundDraft({
     }
   }
 
+  // Hand the AI draft off to the floating composer (rich text + attachments +
+  // real send via email-outbound) instead of opening a mailto link.
   const onUse = () => {
     if (!body.trim()) return
-    if (!toEmail.trim()) { toast.error('Add a recipient email first'); return }
-    const url = `mailto:${toEmail.trim()}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-    window.location.href = url
+    openCompose({
+      mode: 'new',
+      prefillTo: toEmail.trim() || recipientEmail || '',
+      prefillSubject: subject,
+      prefillBody: body,
+      applicationId: app?.id || null,
+    })
   }
 
   const onCopy = async () => {

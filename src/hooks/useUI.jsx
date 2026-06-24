@@ -15,10 +15,16 @@ export function UIProvider({ children }) {
   // feature triggered it (used to highlight the right row in the comparison
   // table). Set to '*' for a manual open with no specific feature focus.
   const [upgradeFeature, setUpgradeFeature] = useState(null)
+  // null = closed. Otherwise { mode, originalEmail, prefillTo, prefillSubject,
+  // prefillBody, applicationId } — drives the floating ComposeEmail panel.
+  const [composeState, setComposeState] = useState(null)
   const nav = useNavigate()
 
   const openUpgrade = useCallback((feature = '*') => setUpgradeFeature(feature), [])
   const closeUpgrade = useCallback(() => setUpgradeFeature(null), [])
+
+  const openCompose = useCallback((config = {}) => setComposeState({ mode: 'new', ...config }), [])
+  const closeCompose = useCallback(() => setComposeState(null), [])
 
   const openDrawer = useCallback((id) => {
     const next = new URLSearchParams(params)
@@ -74,6 +80,7 @@ export function UIProvider({ children }) {
       emailId, openEmail, closeEmail,
       cmdK, setCmdK, aiPanel, toggleAiPanel,
       upgradeFeature, openUpgrade, closeUpgrade,
+      composeState, openCompose, closeCompose,
       navigate: nav,
     }}>
       {children}

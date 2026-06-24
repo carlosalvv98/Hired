@@ -92,6 +92,43 @@ function extractJson(raw: string): Record<string, unknown> {
   throw new Error('Unbalanced JSON in response')
 }
 
+// Decode a base64 string (tolerating whitespace) to raw bytes for Storage
+// upload. Postmark delivers inbound attachment content as base64.
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob((b64 || '').replace(/\s/g, ''))
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+// Save inbound Postmark attachments to the shared `email-attachments` bucket
+// at {user_id}/{email_id}/{filename} (same layout as outbound) and return the
+// stored references for the email's parse_json. Best-effort per file.
+async function saveInboundAttachments(
+  supabase: any, userId: string, emailId: string, payload: any,
+): Promise<Array<{ name: string; path: string; content_type: string; size: number }>> {
+  const list = Array.isArray(payload?.Attachments) ? payload.Attachments : []
+  const refs: Array<{ name: string; path: string; content_type: string; size: number }> = []
+  for (const a of list) {
+    const name = String(a?.Name || 'attachment').replace(/[/\\]/g, '_')
+    if (!a?.Content) continue
+    try {
+      const bytes = base64ToBytes(a.Content)
+      const path = `${userId}/${emailId}/${name}`
+      const contentType = a.ContentType || 'application/octet-stream'
+      const { error } = await supabase.storage
+        .from('email-attachments')
+        .upload(path, bytes, { contentType, upsert: true })
+      if (error) throw error
+      refs.push({ name, path, content_type: contentType, size: a.ContentLength || bytes.length })
+    } catch (err) {
+      console.error(`[email-inbound] attachment "${name}" upload failed:`, (err as Error).message)
+    }
+  }
+  if (refs.length) console.log(`[email-inbound] stored ${refs.length} attachment(s) for email ${emailId}`)
+  return refs
+}
+
 function domainOf(email: string | null | undefined): string | null {
   if (!email) return null
   const at = email.indexOf('@')
@@ -356,6 +393,18 @@ Deno.serve(async (req) => {
 
   console.log(`[email-inbound] saved email ${emailRow.id} for user ${user.id}`)
 
+  // ── Store inbound attachments (best-effort) ─────────────────────────────
+  // Persist them onto parse_json immediately so they survive the no-AI-key
+  // early return and any parse failure below; runAutoActions later merges
+  // them back in alongside the parse result.
+  const inboundAttachments = await saveInboundAttachments(supabase, user.id, emailRow.id, payload)
+  if (inboundAttachments.length) {
+    await supabase
+      .from('emails')
+      .update({ parse_json: { attachments: inboundAttachments } })
+      .eq('id', emailRow.id)
+  }
+
   // ── AI parse (best-effort — never blocks the 200) ───────────────────────
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY')
   if (!apiKey) {
@@ -403,7 +452,7 @@ Deno.serve(async (req) => {
 
     // Run the parse-driven auto-actions. Each is best-effort and isolated, so a
     // failure in one (e.g. contact creation) never blocks the others or the 200.
-    await runAutoActions(supabase, { user, emailRow, payload, parsed, textBody })
+    await runAutoActions(supabase, { user, emailRow, payload, parsed, textBody, inboundAttachments })
   } catch (err) {
     // Parse failed — the email is already saved with parse_status='pending',
     // so it can be retried later. Don't fail the webhook.
@@ -419,9 +468,12 @@ Deno.serve(async (req) => {
 // by the time we get here; everything below is enhancement.
 async function runAutoActions(
   supabase: any,
-  ctx: { user: { id: string }; emailRow: any; payload: any; parsed: any; textBody: string },
+  ctx: {
+    user: { id: string }; emailRow: any; payload: any; parsed: any; textBody: string
+    inboundAttachments: Array<{ name: string; path: string; content_type: string; size: number }>
+  },
 ) {
-  const { user, emailRow, payload, parsed, textBody } = ctx
+  const { user, emailRow, payload, parsed, textBody, inboundAttachments } = ctx
   const fromEmail: string | null = payload.From || null
   const fromName: string | null = payload.FromName || null
   const senderDomain = domainOf(fromEmail)
@@ -506,7 +558,8 @@ async function runAutoActions(
       .from('emails')
       .update({
         parse_status: parseStatus,
-        parse_json: parsed,
+        // Preserve the stored attachment refs alongside the parse result.
+        parse_json: inboundAttachments.length ? { ...parsed, attachments: inboundAttachments } : parsed,
         linked_application_id: linkedAppId,
         linked_confidence: linkedConfidence,
       })

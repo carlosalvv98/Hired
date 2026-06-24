@@ -4,7 +4,7 @@ import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
 import { guardLimit } from '../lib/limitGuard'
 import { confirmToast } from '../lib/confirmToast'
-import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2, Pencil, Mail, Send, Copy } from 'lucide-react'
+import { X, Link as LinkIcon, ArrowRight, Sparkles, FileText, GripVertical, Plus, Trash2, ChevronDown, Bold, Italic, Underline, List, ListOrdered, Archive, ArchiveRestore, Upload, Loader2, Pencil, Mail } from 'lucide-react'
 import Logo from './Logo'
 import OutboundDraft from './OutboundDraft'
 import JobPrep from './JobPrep'
@@ -17,7 +17,7 @@ import {
   setStage, listEmailsForApp, listAppContacts, updateApplication,
   addStep as apiAddStep, deleteStep as apiDeleteStep, reorderSteps,
   listResumes, deleteApplication, createResume, uploadResumeFile,
-  findOrCreateCompany, updateCompany, createOutboundEmail,
+  findOrCreateCompany, updateCompany,
   createContact, linkContact,
 } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
@@ -49,7 +49,7 @@ const SUGGESTED_STEPS = ['Technical Interview', 'Case Study', 'Onsite', 'Hiring 
 
 export default function Drawer({ id, onClose }) {
   const nav = useNavigate()
-  const { openUpgrade } = useUI()
+  const { openUpgrade, openCompose } = useUI()
   const { user } = useAuth()
   const { allowed: tailorAllowed } = useLimit('resume_tailoring')
   const [app, setApp] = useState(null)
@@ -67,7 +67,6 @@ export default function Drawer({ id, onClose }) {
   // Inline outbound-email drafter. Holds the chosen draftType (or null when
   // closed); recipient is resolved from the application's contacts at render.
   const [draft, setDraft] = useState(null)
-  const [composing, setComposing] = useState(false)   // manual email compose form
   const [addingContact, setAddingContact] = useState(false)
   // Must live above the early-return below — React's rules of hooks require
   // every hook to be called on every render path.
@@ -323,17 +322,6 @@ export default function Drawer({ id, onClose }) {
 
   // Open the inline drafter on the Emails tab with a given purpose.
   const openDraft = (type) => { setDraft({ type }); setTab('emails') }
-
-  // Log a manually-written email (mailto opens the client; this records the
-  // outbound copy so it shows in the history/timeline).
-  const onLogSent = async ({ to, subject, body }) => {
-    try {
-      await createOutboundEmail({ applicationId: app.id, to, subject, body }, user.id)
-      setEmails(await listEmailsForApp(id))
-      setComposing(false)
-      toast.success('Email logged')
-    } catch { toast.error('Could not save email') }
-  }
 
   // Create a contact, link it to this job, and surface it in Contacts &
   // Connections. Defaults the company to the job's company.
@@ -613,19 +601,17 @@ export default function Drawer({ id, onClose }) {
                   recipientName={draftContact?.name || ''}
                   onClose={() => setDraft(null)}
                 />
-              ) : composing ? (
-                <ManualEmailForm
-                  defaultTo={draftContact?.email || ''}
-                  onSend={onLogSent}
-                  onClose={() => setComposing(false)}
-                />
               ) : (
                 <div className="row" style={{ gap: 6 }}>
                   <button className="btn ai tiny" onClick={() => openDraft('custom')}>
                     <Sparkles size={12} />Draft with AI
                   </button>
-                  <button className="btn ghost tiny" onClick={() => setComposing(true)}>
-                    <Mail size={12} />Write manually
+                  <button className="btn ghost tiny" onClick={() => openCompose({
+                    mode: 'new',
+                    prefillTo: draftContact?.email || '',
+                    applicationId: app.id,
+                  })}>
+                    <Mail size={12} />Write Email
                   </button>
                 </div>
               )}
@@ -941,55 +927,6 @@ function EditMoney({ label, value, onChange, placeholder = 'not listed' }) {
 // Map a checked step's title to the stage it implies, then return whichever
 // of (current, implied) sits *later* in the linear stage order. We never
 // move backwards via this auto-sync — only forward.
-// Compose an email by hand. We can't send through the user's mailbox, so
-// "Send & log" opens their mail client (mailto) and records an outbound copy.
-function ManualEmailForm({ defaultTo, onSend, onClose }) {
-  const [to, setTo] = useState(defaultTo || '')
-  const [subject, setSubject] = useState('')
-  const [body, setBody] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(`Subject: ${subject}\n\n${body}`)
-      toast.success('Copied')
-    } catch { toast.error('Copy failed') }
-  }
-
-  const onSubmit = async () => {
-    if (!body.trim() || busy) return
-    setBusy(true)
-    try {
-      // Open the user's mail client pre-filled, then log the outbound copy.
-      const url = `mailto:${to.trim()}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
-      window.location.href = url
-      await onSend({ to, subject, body })
-    } finally { setBusy(false) }
-  }
-
-  return (
-    <div className="card card-pad" style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 14 }}>
-      <div className="field"><label>To</label>
-        <input type="email" value={to} onChange={e => setTo(e.target.value)} placeholder="recruiter@company.com" />
-      </div>
-      <div className="field"><label>Subject</label>
-        <input type="text" value={subject} onChange={e => setSubject(e.target.value)} placeholder="Following up on…" />
-      </div>
-      <div className="field"><label>Message</label>
-        <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} placeholder="Write your email…"
-          style={{ width: '100%', resize: 'vertical', minHeight: 110, font: 'inherit', lineHeight: 1.5,
-            padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 8, color: 'var(--ink)', background: '#fff' }} />
-      </div>
-      <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
-        <button className="btn ghost tiny" onClick={onClose}>Cancel</button>
-        <button className="btn ghost tiny" onClick={onCopy} disabled={!body.trim()}><Copy size={11} />Copy</button>
-        <button className="btn indigo tiny" disabled={busy || !body.trim()} onClick={onSubmit}>
-          <Send size={11} />Send &amp; log
-        </button>
-      </div>
-    </div>
-  )
-}
 
 // Add a contact and link it to this job. It also lands in Contacts &
 // Connections. Company defaults to the application's company.

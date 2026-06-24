@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Sparkles, Inbox as InboxIcon, Flag, Star, Archive, Settings as SettingsIcon, Check, Edit2, Link as LinkIcon, MoreHorizontal, X, ArrowRight } from 'lucide-react'
+import { Sparkles, Inbox as InboxIcon, Flag, Star, Archive, Settings as SettingsIcon, Check, Edit2, Link as LinkIcon, MoreHorizontal, X, ArrowRight, PenSquare } from 'lucide-react'
 import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
 import StatusPill from '../components/StatusPill'
 import EmailReplies from '../components/EmailReplies'
+import { EmailActions, EmailAttachments } from '../components/EmailActions'
 import { listEmails, updateEmail } from '../lib/api'
 import { relTime } from '../lib/time'
 import { useAuth } from '../hooks/useAuth'
@@ -21,7 +22,7 @@ const FOLDERS = [
 
 export default function Inbox() {
   const { profile } = useAuth()
-  const { openDrawer } = useUI()
+  const { openDrawer, openCompose } = useUI()
   const [folder, setFolder] = useState('inbox')
   const [emails, setEmails] = useState([])
   const [selId, setSelId] = useState(null)
@@ -40,6 +41,14 @@ export default function Inbox() {
     } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [folder])
+
+  // Refresh the list after the global composer reports a successful send.
+  useEffect(() => {
+    const onSent = () => load()
+    window.addEventListener('hired:email-sent', onSent)
+    return () => window.removeEventListener('hired:email-sent', onSent)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folder])
 
   const filtered = useMemo(() => {
     if (feed === 'parsed') return emails.filter(e => e.parse_status === 'parsed' || e.parse_status === 'needs_review')
@@ -98,6 +107,10 @@ export default function Inbox() {
       />
       <div className="inbox-wrap">
         <div className="mail-folders">
+          <button className="btn primary" style={{ width: '100%', justifyContent: 'center', marginBottom: 12 }}
+            onClick={() => openCompose({ mode: 'new' })}>
+            <PenSquare size={14} />Compose
+          </button>
           <div className="hired-email-card">
             <div className="eyebrow" style={{ marginBottom: 6 }}>Your Hired email</div>
             <div className="addr">{HIRED_EMAIL}</div>
@@ -181,12 +194,13 @@ export default function Inbox() {
           ) : (
             <>
               <div className="row" style={{ marginBottom: 10 }}>
-                <button className="btn ghost tiny" onClick={onArchive}><Archive size={13} /></button>
-                <button className="btn ghost tiny" onClick={onStar} style={{ color: sel.is_starred ? '#f59e0b' : undefined }}>
+                <EmailActions email={sel} />
+                <span style={{ flex: 1 }} />
+                <button className="btn ghost tiny" onClick={onArchive} title="Archive"><Archive size={13} /></button>
+                <button className="btn ghost tiny" onClick={onStar} title="Star" style={{ color: sel.is_starred ? '#f59e0b' : undefined }}>
                   <Star size={13} fill={sel.is_starred ? 'currentColor' : 'none'} />
                 </button>
                 <button className="btn ghost tiny"><Flag size={13} /></button>
-                <span style={{ flex: 1 }} />
                 <button className="btn ghost tiny"><MoreHorizontal size={13} /></button>
               </div>
               <h2>{sel.subject}</h2>
@@ -230,6 +244,12 @@ export default function Inbox() {
 
               <div style={{ fontSize: 13.5, lineHeight: 1.7, color: 'var(--ink)', whiteSpace: 'pre-line', marginTop: 8 }}>
                 {sel.body_text || sel.snippet || '—'}
+              </div>
+
+              <EmailAttachments email={sel} />
+
+              <div className="row" style={{ gap: 6, marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                <EmailActions email={sel} />
               </div>
 
               <EmailReplies email={sel} />

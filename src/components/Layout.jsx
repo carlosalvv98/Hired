@@ -6,6 +6,7 @@ import EmailDrawer from './EmailDrawer'
 import CmdK from './CmdK'
 import MobileLayout from './MobileLayout'
 import UpgradeModal from './UpgradeModal'
+import ComposeEmail from './ComposeEmail'
 import { useUI } from '../hooks/useUI'
 import { listApplications, listEmails } from '../lib/api'
 
@@ -20,9 +21,15 @@ const useIsMobile = () => {
 }
 
 export default function Layout() {
-  const { drawerId, emailId, cmdK, setCmdK, closeDrawer, closeEmail, upgradeFeature, closeUpgrade } = useUI()
+  const { drawerId, emailId, cmdK, setCmdK, closeDrawer, closeEmail, upgradeFeature, closeUpgrade, composeState, closeCompose } = useUI()
   const isMobile = useIsMobile()
   const [counts, setCounts] = useState({ '/tracker': 0, '/inbox': 0 })
+
+  // After a send, close the composer and let any open email list refresh.
+  const onComposeSent = () => {
+    closeCompose()
+    window.dispatchEvent(new CustomEvent('hired:email-sent'))
+  }
 
   useEffect(() => {
     let alive = true
@@ -47,6 +54,7 @@ export default function Layout() {
         {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
+        {composeState && <ComposeEmail key={JSON.stringify(composeState)} {...composeState} onClose={closeCompose} onSent={onComposeSent} />}
       </>
     )
   }
@@ -62,6 +70,7 @@ export default function Layout() {
         {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
         {cmdK && <CmdK onClose={() => setCmdK(false)} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
+        {composeState && <ComposeEmail key={JSON.stringify(composeState)} {...composeState} onClose={closeCompose} onSent={onComposeSent} />}
       </div>
     </div>
   )
