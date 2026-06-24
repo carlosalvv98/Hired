@@ -14,12 +14,12 @@ import toast from 'react-hot-toast'
  * @param {string} [crumbs] - mono breadcrumb after the title
  */
 export default function AppBar({ title, crumbs }) {
-  const { setCmdK, openUpgrade } = useUI()
+  const { openCmdK, openUpgrade } = useUI()
   const { allowed: askAllowed } = useLimit('ask_ai_per_day')
 
   const onAskAI = () => {
     if (!guardLimit({ allowed: askAllowed, feature: 'ask_ai_per_day', openUpgrade })) return
-    setCmdK(true)
+    openCmdK('ask')
   }
 
   return (
@@ -27,7 +27,7 @@ export default function AppBar({ title, crumbs }) {
       <h1>{title}</h1>
       {crumbs && <span className="crumbs">/ {crumbs}</span>}
       <span className="spacer" />
-      <div className="search" onClick={() => setCmdK(true)}>
+      <div className="search" onClick={() => openCmdK('search')}>
         <Search size={14} strokeWidth={1.6} />
         <span>Search apps, contacts, emails…</span>
         <span className="kbd">⌘K</span>

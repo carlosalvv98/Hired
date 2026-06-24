@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Sparkles, Inbox as InboxIcon, Flag, Star, Archive, Settings as SettingsIcon, Check, Edit2, Link as LinkIcon, MoreHorizontal, X, ArrowRight, PenSquare } from 'lucide-react'
+import { Sparkles, Inbox as InboxIcon, Flag, Star, Archive, Settings as SettingsIcon, Check, Edit2, Link as LinkIcon, MoreHorizontal, ArrowRight, PenSquare, FileText, Trash2 } from 'lucide-react'
 import AppBar, { PageActions } from '../components/AppBar'
 import Logo from '../components/Logo'
 import StatusPill from '../components/StatusPill'
 import EmailReplies from '../components/EmailReplies'
 import { EmailActions, EmailAttachments } from '../components/EmailActions'
-import { listEmails, updateEmail } from '../lib/api'
+import { listEmails, updateEmail, groupThreads, listThread, cleanSubject, countDrafts, deleteEmail, getEmailByMessageId } from '../lib/api'
+import { countSentEmails } from '../lib/agents/styleAnalyzer'
 import { relTime } from '../lib/time'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
@@ -17,11 +18,12 @@ const FOLDERS = [
   { k: 'parsed',   n: 'Auto-parsed',     Icon: Sparkles, accent: true },
   { k: 'unlinked', n: 'Needs review',    Icon: Flag, warn: true },
   { k: 'starred',  n: 'Starred',         Icon: Star },
+  { k: 'draft',    n: 'Drafts',          Icon: FileText },
   { k: 'archive',  n: 'Archive',         Icon: Archive },
 ]
 
 export default function Inbox() {
-  const { profile } = useAuth()
+  const { profile, user } = useAuth()
   const { openDrawer, openCompose } = useUI()
   const [folder, setFolder] = useState('inbox')
   const [emails, setEmails] = useState([])
@@ -29,9 +31,18 @@ export default function Inbox() {
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
   const [feed, setFeed] = useState('parsed')
+  const [draftCount, setDraftCount] = useState(0)
+  // When the selected row is a multi-message thread, the full conversation
+  // (inbound + sent, oldest first) lives here and the reading pane switches to
+  // the stacked conversation view.
+  const [activeThreadId, setActiveThreadId] = useState(null)
+  const [threadEmails, setThreadEmails] = useState(null)
+  const [expanded, setExpanded] = useState(() => new Set())
 
   const load = async () => {
     setLoading(true)
+    setActiveThreadId(null)
+    setThreadEmails(null)
     try {
       const e = await listEmails({ folder })
       setEmails(e)
@@ -42,20 +53,75 @@ export default function Inbox() {
   }
   useEffect(() => { load() }, [folder])
 
+  const loadDraftCount = () => countDrafts().then(setDraftCount).catch(() => {})
+  useEffect(() => { loadDraftCount() }, [])
+
+  // One-time nudge (Pro/Elite, no style learned yet): once the user has sent
+  // enough emails, suggest learning their writing style. localStorage-gated so
+  // it never repeats. Pills already drive discovery — this is just a hint.
+  useEffect(() => {
+    if (!user?.id) return
+    const plan = user.plan
+    if (plan !== 'pro' && plan !== 'elite') return
+    if (user.writing_style) return
+    let shown = false
+    try { shown = !!localStorage.getItem('style_nudge_shown') } catch { /* ignore */ }
+    if (shown) return
+    countSentEmails(user.id).then(c => {
+      if (c < 5) return
+      try { localStorage.setItem('style_nudge_shown', '1') } catch { /* ignore */ }
+      toast("✨ You've sent enough emails for the AI to learn your writing style. Try “Learn My Style” next time you draft a reply!", { duration: 6000 })
+    }).catch(() => {})
+  }, [user?.id, user?.plan, user?.writing_style])
+
   // Refresh the list after the global composer reports a successful send.
   useEffect(() => {
-    const onSent = () => load()
+    const onSent = () => { load(); loadDraftCount() }
+    const onDrafts = () => { loadDraftCount(); if (folder === 'draft') load() }
     window.addEventListener('hired:email-sent', onSent)
-    return () => window.removeEventListener('hired:email-sent', onSent)
+    window.addEventListener('hired:drafts-changed', onDrafts)
+    return () => {
+      window.removeEventListener('hired:email-sent', onSent)
+      window.removeEventListener('hired:drafts-changed', onDrafts)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folder])
 
+  // Drafts are shown ungrouped; everything else respects the parsed-feed toggle.
   const filtered = useMemo(() => {
-    if (feed === 'parsed') return emails.filter(e => e.parse_status === 'parsed' || e.parse_status === 'needs_review')
+    if (folder === 'draft') return emails
+    if (folder === 'inbox' && feed === 'parsed') return emails.filter(e => e.parse_status === 'parsed' || e.parse_status === 'needs_review')
     return emails
-  }, [emails, feed])
+  }, [emails, feed, folder])
 
-  const sel = emails.find(e => e.id === selId) || filtered[0]
+  // Collapse conversations into one representative row each (newest email).
+  const grouped = useMemo(
+    () => (folder === 'draft' ? filtered : groupThreads(filtered)),
+    [filtered, folder],
+  )
+
+  // Load the full conversation when a threaded row is opened.
+  useEffect(() => {
+    if (!activeThreadId) return
+    let alive = true
+    listThread(activeThreadId).then(list => {
+      if (!alive) return
+      setThreadEmails(list)
+      const exp = new Set()
+      list.forEach((em, i) => { if (i === list.length - 1 || em.is_unread) exp.add(em.id) })
+      setExpanded(exp)
+      const unread = list.filter(em => em.is_unread)
+      if (unread.length) {
+        unread.forEach(em => updateEmail(em.id, { is_unread: false }).catch(() => {}))
+        setEmails(prev => prev.map(x => x.thread_id === activeThreadId ? { ...x, is_unread: false } : x))
+      }
+    }).catch(() => {})
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId])
+
+  const sel = emails.find(e => e.id === selId) || grouped[0]
+  const isThreadView = !!threadEmails && threadEmails.length > 1
   const HIRED_EMAIL = profile?.forwarding_address || `hired-${profile?.handle || 'me'}@hired.app`
 
   const onCopy = async () => {
@@ -64,6 +130,60 @@ export default function Inbox() {
       setCopied(true)
       setTimeout(() => setCopied(false), 1400)
     } catch { toast.error('Copy failed') }
+  }
+
+  // Open a list row. Threaded rows load the conversation; single rows mark read.
+  const selectRow = (row) => {
+    setSelId(row.id)
+    if (row.threadCount > 1 && row.thread_id) {
+      setActiveThreadId(row.thread_id)
+    } else {
+      setActiveThreadId(null)
+      setThreadEmails(null)
+      if (row.is_unread) {
+        updateEmail(row.id, { is_unread: false }).catch(() => {})
+        setEmails(prev => prev.map(x => x.id === row.id ? { ...x, is_unread: false } : x))
+      }
+    }
+  }
+
+  const toggleExpand = (id) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+
+  // Reopen a draft in the composer with everything pre-filled. Reply drafts
+  // reload their parent email so the quoted/threaded context is restored.
+  const openDraft = async (d) => {
+    const inReplyTo = d.parse_json?.in_reply_to || null
+    let original = null
+    if (inReplyTo) {
+      try { original = await getEmailByMessageId(inReplyTo) } catch { /* parent may be gone */ }
+    }
+    openCompose({
+      mode: inReplyTo ? 'reply' : 'new',
+      draftId: d.id,
+      draftThreadId: d.thread_id || null,
+      draftInReplyTo: inReplyTo,
+      originalEmail: original,
+      prefillTo: (d.to_addresses || []).join(', '),
+      prefillCc: (d.cc_addresses || []).join(', '),
+      prefillSubject: d.subject || '',
+      prefillBody: d.body_html || d.body_text || '',
+      applicationId: d.linked_application_id || null,
+    })
+  }
+
+  const onDeleteDraft = async (d, e) => {
+    e?.stopPropagation()
+    if (!window.confirm('Delete this draft?')) return
+    try {
+      await deleteEmail(d.id)
+      setEmails(prev => prev.filter(x => x.id !== d.id))
+      loadDraftCount()
+      toast.success('Draft deleted')
+    } catch { toast.error('Could not delete draft') }
   }
 
   const onArchive = async () => {
@@ -131,6 +251,7 @@ export default function Inbox() {
                   <Icon size={15} strokeWidth={1.6} />
                 </span>
                 <span>{f.n}</span>
+                {f.k === 'draft' && draftCount > 0 && <span className="folder-count">{draftCount}</span>}
               </div>
             )
           })}
@@ -145,36 +266,55 @@ export default function Inbox() {
         </div>
 
         <div className="mail-list">
-          <div className="ai-parsed-banner">
-            <span className="ico"><Sparkles size={11} /></span>
-            <span><b>AI parses every email</b> · linked to applications · interview times pulled to calendar</span>
-          </div>
+          {folder !== 'draft' && (
+            <div className="ai-parsed-banner">
+              <span className="ico"><Sparkles size={11} /></span>
+              <span><b>AI parses every email</b> · linked to applications · interview times pulled to calendar</span>
+            </div>
+          )}
           {loading ? (
             <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
               {[1,2,3,4].map(i => <div key={i} className="skel" style={{ height: 64 }} />)}
             </div>
-          ) : filtered.length === 0 ? (
+          ) : grouped.length === 0 ? (
             <div style={{ padding: 28, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12.5 }}>
-              No emails in this folder.
-              <div style={{ fontSize: 11, marginTop: 6 }}>
-                Forward to <span className="mono" style={{ color: 'var(--accent)' }}>{HIRED_EMAIL}</span>
-              </div>
+              {folder === 'draft' ? 'No drafts yet.' : (
+                <>
+                  No emails in this folder.
+                  <div style={{ fontSize: 11, marginTop: 6 }}>
+                    Forward to <span className="mono" style={{ color: 'var(--accent)' }}>{HIRED_EMAIL}</span>
+                  </div>
+                </>
+              )}
             </div>
-          ) : filtered.map(e => (
+          ) : folder === 'draft' ? (
+            grouped.map(d => (
+              <div key={d.id} className={`mail-row ${selId === d.id ? 'on' : ''}`} onClick={() => openDraft(d)}>
+                <div className="from-row">
+                  <span className="from">{(d.to_addresses || []).join(', ') || 'No recipients'}</span>
+                  <span className="when">{relTime(d.received_at)}</span>
+                </div>
+                <div className="subj">{d.subject || 'No subject'}</div>
+                <div className="preview">{d.snippet || (d.body_text || '').slice(0, 160) || 'Empty draft'}</div>
+                <div className="row" style={{ gap: 4, marginTop: 2 }}>
+                  <span className="tag" style={{ color: 'var(--ink-3)' }}>Draft</span>
+                  <span style={{ flex: 1 }} />
+                  <button className="btn ghost tiny" title="Delete draft" onClick={(e) => onDeleteDraft(d, e)}><Trash2 size={12} /></button>
+                </div>
+              </div>
+            ))
+          ) : grouped.map(e => (
             <div key={e.id}
-              className={`mail-row ${e.is_unread ? 'unread' : ''} ${selId === e.id ? 'on' : ''}`}
-              onClick={() => {
-                setSelId(e.id)
-                if (e.is_unread) {
-                  updateEmail(e.id, { is_unread: false }).catch(() => {})
-                  setEmails(prev => prev.map(x => x.id === e.id ? { ...x, is_unread: false } : x))
-                }
-              }}>
+              className={`mail-row ${e.threadHasUnread ? 'unread' : ''} ${selId === e.id ? 'on' : ''}`}
+              onClick={() => selectRow(e)}>
               <div className="from-row">
                 <span className="from">{e.from_name || e.from_email}</span>
                 <span className="when">{relTime(e.received_at)}</span>
               </div>
-              <div className="subj">{e.subject}</div>
+              <div className="subj">
+                {e.threadCount > 1 ? e.threadSubject : cleanSubject(e.subject)}
+                {e.threadCount > 1 && <span className="thread-badge">{e.threadCount}</span>}
+              </div>
               <div className="preview">{e.snippet || (e.body_text || '').slice(0, 160)}</div>
               <div className="row" style={{ gap: 4, marginTop: 2 }}>
                 {e.parse_json?.stage_signal ? <StatusPill s={e.parse_json.stage_signal} /> : (
@@ -187,11 +327,63 @@ export default function Inbox() {
         </div>
 
         <div className="mail-pane">
-          {!sel ? (
+          {folder === 'draft' ? (
+            <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-3)', textAlign: 'center', padding: 24 }}>
+              <div>
+                <FileText size={28} style={{ opacity: 0.4 }} />
+                <div style={{ marginTop: 8, fontSize: 12.5 }}>Click a draft to keep editing it.</div>
+              </div>
+            </div>
+          ) : !sel ? (
             <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-3)' }}>
               Select an email
             </div>
+          ) : isThreadView ? (
+            // ── Threaded conversation view ──────────────────────────────────
+            <>
+              <div className="row" style={{ marginBottom: 10 }}>
+                <EmailActions email={threadEmails[threadEmails.length - 1]} />
+                <span style={{ flex: 1 }} />
+                <span style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{threadEmails.length} messages</span>
+              </div>
+              <h2>{cleanSubject(threadEmails[0].subject)}</h2>
+              <div className="thread-list" style={{ marginTop: 12 }}>
+                {threadEmails.map((em) => {
+                  const open = expanded.has(em.id)
+                  return (
+                    <div key={em.id} className={`thread-msg ${open ? 'open' : ''} ${em.is_unread ? 'unread' : ''}`}>
+                      <div className="thread-msg-head" onClick={() => toggleExpand(em.id)}>
+                        <Logo co={em.parse_json?.company || em.application?.company?.name} size={28} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="row" style={{ gap: 6 }}>
+                            <span style={{ fontSize: 12.5, fontWeight: em.is_unread ? 700 : 600 }}>{em.from_name || em.from_email}</span>
+                            {em.folder === 'sent' && <span className="tag" style={{ fontSize: 9.5 }}>sent</span>}
+                            <span style={{ flex: 1 }} />
+                            <span className="mono muted" style={{ fontSize: 10 }}>{relTime(em.received_at)}</span>
+                          </div>
+                          {!open && (
+                            <div className="thread-snippet">{em.snippet || (em.body_text || '').slice(0, 120)}</div>
+                          )}
+                        </div>
+                      </div>
+                      {open && (
+                        <div className="thread-body">
+                          <div style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--ink)', whiteSpace: 'pre-line' }}>
+                            {em.body_text || em.snippet || '—'}
+                          </div>
+                          <EmailAttachments email={em} />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="row" style={{ gap: 6, marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+                <EmailActions email={threadEmails[threadEmails.length - 1]} />
+              </div>
+            </>
           ) : (
+            // ── Single-email reading pane (unchanged) ───────────────────────
             <>
               <div className="row" style={{ marginBottom: 10 }}>
                 <EmailActions email={sel} />

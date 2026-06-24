@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Sparkles, Send, RefreshCw, Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
+import { useStyleLearner } from '../hooks/useStyleLearner'
 import { guardLimit } from '../lib/limitGuard'
 import { callProxy, trackUsage, MODELS } from '../lib/ai'
+import { buildReplyStyleSystem } from '../lib/agents/styleAnalyzer'
 
 // Tone options. Each generates ONE reply (1 credit). `Gracious` is only
 // offered when the linked application was rejected/ghosted — see TONES_FOR().
@@ -53,6 +55,7 @@ export default function EmailReplies({ email }) {
   const { user } = useAuth()
   const { openUpgrade, openCompose } = useUI()
   const { allowed, used, limit, refresh } = useLimit('email_replies')
+  const { styleEnabled, hasStyle, style, learning, learnStyle } = useStyleLearner()
 
   const [tone, setTone] = useState(null)
   const [reply, setReply] = useState('')
@@ -99,10 +102,12 @@ export default function EmailReplies({ email }) {
       ].filter(Boolean).join('\n') || 'No linked application context available.'
 
       const inbound = email.body_text || email.snippet || '(no body)'
-      const userMessage = `Context about the job:\n${context}\n\nTone: ${TONES[selectedTone].label}\n\nInbound email from ${email.from_name || email.from_email}:\nSubject: ${email.subject || '(no subject)'}\n\n${inbound}\n\nWrite the reply now.`
+      const isStyle = selectedTone === 'my_style'
+      const toneLine = isStyle ? '' : `Tone: ${TONES[selectedTone].label}\n\n`
+      const userMessage = `Context about the job:\n${context}\n\n${toneLine}Inbound email from ${email.from_name || email.from_email}:\nSubject: ${email.subject || '(no subject)'}\n\n${inbound}\n\nWrite the reply now.`
 
       const data = await callProxy({
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: isStyle ? buildReplyStyleSystem(style) : SYSTEM_PROMPT,
         userMessage,
         model: MODELS.fast,
         max_tokens: 800,
@@ -166,6 +171,27 @@ export default function EmailReplies({ email }) {
       </div>
 
       <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: reply || loading ? 12 : 0 }}>
+        {styleEnabled && (hasStyle ? (
+          <button
+            className={`btn tiny style-pill ${tone === 'my_style' ? 'on' : ''}`}
+            disabled={outOfCredits || loading}
+            title="Reply in your learned writing voice"
+            onClick={() => generate('my_style')}
+          >
+            {loading && tone === 'my_style' ? <Loader2 size={11} className="spin" /> : <Sparkles size={11} />}
+            My Style
+          </button>
+        ) : (
+          <button
+            className="btn tiny style-pill learn"
+            disabled={loading || learning}
+            title="Analyze your sent emails to learn your writing voice"
+            onClick={learnStyle}
+          >
+            {learning ? <Loader2 size={11} className="spin" /> : <Sparkles size={11} />}
+            {learning ? 'Analyzing your style…' : 'Learn My Style'}
+          </button>
+        ))}
         {tones.map(k => (
           <button
             key={k}
@@ -183,7 +209,7 @@ export default function EmailReplies({ email }) {
       {loading && (
         <div className="card card-pad" style={{ padding: 14, display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-2)', fontSize: 12 }}>
           <Loader2 size={14} className="spin" />
-          Writing a {tone ? TONES[tone].label.toLowerCase() : ''} reply…
+          Writing {tone === 'my_style' ? 'a reply in your style' : `a ${tone ? TONES[tone].label.toLowerCase() : ''} reply`}…
         </div>
       )}
 

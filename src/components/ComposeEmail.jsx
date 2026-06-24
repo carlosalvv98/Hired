@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Underline from '@tiptap/extension-underline'
@@ -6,11 +6,17 @@ import Link from '@tiptap/extension-link'
 import Placeholder from '@tiptap/extension-placeholder'
 import {
   X, Minus, Bold, Italic, Underline as UnderlineIcon, List, ListOrdered,
-  Link2, Undo2, Redo2, Paperclip, Send, Loader2, FileText, Image as ImageIcon, File,
+  Link2, Undo2, Redo2, Paperclip, Send, Loader2, FileText, Image as ImageIcon, File, Check,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { supabase } from '../lib/supabase'
+import { createDraft, updateDraft, deleteEmail } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
+
+// Fire-and-forget signal so the Inbox refreshes its Drafts list / count.
+function notifyDraftsChanged() {
+  window.dispatchEvent(new CustomEvent('hired:drafts-changed'))
+}
 
 // Floating Gmail-style compose window with a TipTap rich-text body. Sends for
 // real through the `email-outbound` edge function (base64 attachments, HTML +
@@ -91,13 +97,20 @@ export default function ComposeEmail({
   mode = 'new',
   originalEmail = null,
   prefillTo = '',
+  prefillCc = '',
   prefillSubject = '',
   prefillBody = '',
   applicationId = null,
+  draftId: initialDraftId = null,   // set when re-opening an existing draft
+  draftThreadId = null,             // thread_id carried by a reply draft
+  draftInReplyTo = null,            // parent message id carried by a reply draft
   onClose,
   onSent,
 }) {
   const { user, profile } = useAuth()
+  // The draft has already been quoted/threaded when saved, so don't re-append
+  // the quote block on reopen.
+  const isExistingDraft = !!initialDraftId
 
   // ── Initial recipients / subject derived from mode ───────────────────────
   const init = useMemo(() => {
@@ -105,10 +118,10 @@ export default function ComposeEmail({
       [profile?.forwarding_address, user?.email].filter(Boolean).map(s => s.toLowerCase()),
     )
     let to = prefillTo || ''
-    let cc = ''
+    let cc = prefillCc || ''
     let subject = prefillSubject || ''
 
-    if (originalEmail) {
+    if (originalEmail && !isExistingDraft) {
       const baseSubject = originalEmail.subject || ''
       if (mode === 'reply' || mode === 'reply_all') {
         to = to || originalEmail.from_email || ''
@@ -128,11 +141,14 @@ export default function ComposeEmail({
 
   const initialContent = useMemo(() => {
     const lead = isHtml(prefillBody) ? prefillBody : textToHtml(prefillBody)
-    const quote = (mode === 'reply' || mode === 'reply_all')
-      ? buildQuote(originalEmail, false)
-      : mode === 'forward'
-        ? buildQuote(originalEmail, true)
-        : ''
+    // A reopened draft already contains its quoted section in body_html.
+    const quote = isExistingDraft
+      ? ''
+      : (mode === 'reply' || mode === 'reply_all')
+        ? buildQuote(originalEmail, false)
+        : mode === 'forward'
+          ? buildQuote(originalEmail, true)
+          : ''
     return `${lead || '<p></p>'}${quote}`
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -144,8 +160,12 @@ export default function ComposeEmail({
   const [attachments, setAttachments] = useState([]) // { name, type, size, base64 }
   const [sending, setSending] = useState(false)
   const [minimized, setMinimized] = useState(false)
-  const [confirmClose, setConfirmClose] = useState(false)
+  const [bodyHtml, setBodyHtml] = useState(initialContent)
+  const [saveStatus, setSaveStatus] = useState('idle') // idle | saving | saved
   const fileRef = useRef(null)
+  const draftIdRef = useRef(initialDraftId) // single source of truth across async saves
+  const savingRef = useRef(false)
+  const closedRef = useRef(false)
 
   const editor = useEditor({
     extensions: [
@@ -155,11 +175,66 @@ export default function ComposeEmail({
       Placeholder.configure({ placeholder: 'Write your message...' }),
     ],
     content: initialContent,
+    onUpdate: ({ editor }) => setBodyHtml(editor.getHTML()),
   })
 
-  const hasContent = () =>
-    !!to.trim() || !!cc.trim() || !!subject.trim() ||
-    !!(editor && editor.getText().trim()) || attachments.length > 0
+  // Worth persisting? Only once the user has a recipient or has typed a body —
+  // never auto-save an empty composer.
+  const worthSaving = () =>
+    !!to.trim() || !!cc.trim() || !!subject.trim() || !!(editor && editor.getText().trim())
+
+  // ── Draft auto-save ──────────────────────────────────────────────────────
+  // Attachments are intentionally NOT saved in drafts (MVP).
+  const draftFields = () => ({
+    to_addresses: parseRecipients(to),
+    cc_addresses: showCc ? parseRecipients(cc) : [],
+    subject,
+    body_html: editor ? editor.getHTML() : '',
+    body_text: editor ? editor.getText() : '',
+    linked_application_id: applicationId || originalEmail?.linked_application_id || null,
+    in_reply_to: originalEmail?.provider_message_id || draftInReplyTo || null,
+    thread_id: originalEmail?.thread_id || draftThreadId || null,
+    folder: 'draft',
+  })
+
+  const saveDraft = async () => {
+    if (savingRef.current || !worthSaving()) return
+    savingRef.current = true
+    setSaveStatus('saving')
+    try {
+      const fields = draftFields()
+      if (draftIdRef.current) {
+        await updateDraft(draftIdRef.current, fields)
+      } else {
+        const row = await createDraft(fields, user.id)
+        draftIdRef.current = row.id
+      }
+      if (!closedRef.current) setSaveStatus('saved')
+      notifyDraftsChanged()
+    } catch {
+      if (!closedRef.current) setSaveStatus('idle')
+    } finally {
+      savingRef.current = false
+    }
+  }
+
+  // Debounced auto-save: 3s after the user stops typing / editing recipients.
+  // Skips the very first render (no edits yet) and any send-in-progress.
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return }
+    if (sending || !worthSaving()) return
+    const t = setTimeout(() => { saveDraft() }, 3000)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [to, cc, subject, bodyHtml, showCc])
+
+  // Fade the "Draft saved" pill back to idle after a couple seconds.
+  useEffect(() => {
+    if (saveStatus !== 'saved') return
+    const t = setTimeout(() => setSaveStatus('idle'), 2000)
+    return () => clearTimeout(t)
+  }, [saveStatus])
 
   // ── Attachments ──────────────────────────────────────────────────────────
   const onPickFiles = async (e) => {
@@ -188,8 +263,8 @@ export default function ComposeEmail({
     subject,
     html_body: editor ? editor.getHTML() : '',
     text_body: editor ? editor.getText() : '',
-    in_reply_to: originalEmail?.provider_message_id || null,
-    thread_id: originalEmail?.thread_id || null,
+    in_reply_to: originalEmail?.provider_message_id || draftInReplyTo || null,
+    thread_id: originalEmail?.thread_id || draftThreadId || null,
     attachments: attachments.map(a => ({ name: a.name, content_type: a.type, content_base64: a.base64 })),
     is_draft: isDraft,
     application_id: applicationId || originalEmail?.linked_application_id || null,
@@ -211,7 +286,13 @@ export default function ComposeEmail({
     try {
       const { error } = await supabase.functions.invoke('email-outbound', { body: buildPayload(false) })
       if (error) throw error
+      // The edge function created a fresh 'sent' row; drop the draft copy.
+      if (draftIdRef.current) {
+        try { await deleteEmail(draftIdRef.current) } catch { /* best effort */ }
+        notifyDraftsChanged()
+      }
       toast.success('Email sent')
+      closedRef.current = true
       onSent?.()
       onClose?.()
     } catch (err) {
@@ -223,20 +304,26 @@ export default function ComposeEmail({
     }
   }
 
-  const saveDraftAndClose = async () => {
-    setConfirmClose(false)
-    try {
-      await supabase.functions.invoke('email-outbound', { body: buildPayload(true) })
-      toast.success('Saved as draft')
-    } catch {
-      toast.error('Could not save draft')
+  // Close with content auto-saves (no confirm dialog — drafts are persisted).
+  // If the user typed and closed before the 3s debounce ever ran, do one final
+  // save so nothing is lost.
+  const handleClose = async () => {
+    closedRef.current = true
+    if (worthSaving()) {
+      await saveDraft()
+      if (attachments.length > 0) toast('Attachments are not saved in drafts')
     }
     onClose?.()
   }
 
-  const handleClose = () => {
-    if (hasContent()) setConfirmClose(true)
-    else onClose?.()
+  // Discard truly throws the draft away — delete the saved row if one exists.
+  const handleDiscard = async () => {
+    closedRef.current = true
+    if (draftIdRef.current) {
+      try { await deleteEmail(draftIdRef.current) } catch {}
+      notifyDraftsChanged()
+    }
+    onClose?.()
   }
 
   // ── Minimized: just the header bar ───────────────────────────────────────
@@ -344,23 +431,11 @@ export default function ComposeEmail({
         {attachments.length > 0 && (
           <span className="compose-attach-count"><Paperclip size={11} />{attachments.length} file{attachments.length === 1 ? '' : 's'}</span>
         )}
+        {saveStatus === 'saving' && <span className="compose-save-status">Saving…</span>}
+        {saveStatus === 'saved' && <span className="compose-save-status saved"><Check size={11} />Draft saved</span>}
         <span style={{ flex: 1 }} />
-        <button className="btn ghost tiny" disabled={sending} onClick={handleClose}>Discard</button>
+        <button className="btn ghost tiny" disabled={sending} onClick={handleDiscard}>Discard</button>
       </div>
-
-      {/* Save-as-draft confirm on close */}
-      {confirmClose && (
-        <div className="compose-confirm">
-          <div className="compose-confirm-card">
-            <div className="compose-confirm-msg">Save this email as a draft?</div>
-            <div className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
-              <button className="btn ghost tiny" onClick={() => setConfirmClose(false)}>Cancel</button>
-              <button className="btn ghost tiny" onClick={() => { setConfirmClose(false); onClose?.() }}>Discard</button>
-              <button className="btn primary tiny" onClick={saveDraftAndClose}>Save draft</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

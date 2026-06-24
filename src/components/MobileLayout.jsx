@@ -9,7 +9,7 @@ const TABS = [
 ]
 
 export default function MobileLayout({ children }) {
-  const { setCmdK } = useUI()
+  const { openCmdK } = useUI()
   return (
     <div className="mobile-shell">
       <div style={{ flex: 1, paddingBottom: 80 }}>{children}</div>
@@ -21,7 +21,7 @@ export default function MobileLayout({ children }) {
             <span>{label}</span>
           </NavLink>
         ))}
-        <div className="item" onClick={() => setCmdK(true)}>
+        <div className="item" onClick={() => openCmdK('ask')}>
           <Sparkles size={20} strokeWidth={1.6} />
           <span>AI</span>
         </div>

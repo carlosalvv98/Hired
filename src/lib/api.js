@@ -208,6 +208,7 @@ export async function listEmails({ folder = 'inbox', applicationId = null } = {}
     .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
     .order('received_at', { ascending: false });
   if (folder === 'archive') q = q.eq('folder', 'archive');
+  else if (folder === 'draft') q = q.eq('folder', 'draft');
   else if (folder === 'starred') q = q.eq('is_starred', true);
   else if (folder === 'parsed') q = q.eq('parse_status', 'parsed');
   else if (folder === 'unlinked') q = q.eq('parse_status', 'needs_review');
@@ -266,6 +267,124 @@ export async function createOutboundEmail({ applicationId, to, subject, body }, 
   }).select().single();
   if (error) throw error;
   return data;
+}
+
+// ── Threading ──────────────────────────────────────────────────────────────
+// Strip leading "Re:"/"Fwd:"/"Fw:" prefixes for clean display in the list and
+// thread headers. The actual email subjects are left untouched in the DB.
+export function cleanSubject(subject) {
+  const s = (subject || '').replace(/^(\s*(re|fwd|fw)\s*:\s*)+/i, '').trim();
+  return s || '(no subject)';
+}
+
+// Client-side grouping (Option A). Takes a list already ordered newest-first and
+// collapses emails sharing a thread_id into a single representative row (the most
+// recent email), annotated with threadCount / threadHasUnread / threadSubject.
+// Emails with a null thread_id stay ungrouped — one row each.
+export function groupThreads(emails) {
+  const groups = new Map();
+  const order = [];
+  for (const e of emails) {
+    const key = e.thread_id || `single:${e.id}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(e);
+  }
+  return order.map((key) => {
+    const list = groups.get(key); // newest first (input is sorted desc)
+    const rep = list[0];
+    const oldest = list[list.length - 1];
+    return {
+      ...rep,
+      threadCount: list.length,
+      threadHasUnread: list.some((x) => x.is_unread),
+      threadSubject: cleanSubject(oldest.subject),
+      threadIds: list.map((x) => x.id),
+    };
+  });
+}
+
+// All emails in a conversation — inbound AND sent — oldest first (read order).
+export async function listThread(threadId) {
+  const { data, error } = await supabase.from('emails')
+    .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
+    .eq('thread_id', threadId)
+    .order('received_at', { ascending: true, nullsFirst: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// ── Drafts ─────────────────────────────────────────────────────────────────
+// Drafts live in the emails table with folder='draft'. Auto-save creates the
+// row once, then patches it in place (see ComposeEmail). Attachments are not
+// persisted in drafts (MVP).
+export async function createDraft(fields, userId) {
+  const text = (fields.body_text || '').trim();
+  const { data, error } = await supabase.from('emails').insert({
+    user_id: userId,
+    mailbox_source: 'outbound',
+    from_name: 'You',
+    folder: 'draft',
+    parse_status: 'pending', // keeps drafts out of the parse_status='parsed' folder
+    is_unread: false,
+    received_at: new Date().toISOString(),
+    to_addresses: fields.to_addresses?.length ? fields.to_addresses : null,
+    cc_addresses: fields.cc_addresses?.length ? fields.cc_addresses : null,
+    subject: fields.subject || null,
+    body_html: fields.body_html || null,
+    body_text: fields.body_text || null,
+    snippet: text ? text.slice(0, 200) : null,
+    linked_application_id: fields.linked_application_id || null,
+    thread_id: fields.thread_id || null,
+    // emails has no in_reply_to column — stash it here so a reply draft keeps
+    // its threading context when reopened.
+    parse_json: { draft: true, in_reply_to: fields.in_reply_to || null },
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateDraft(id, fields) {
+  const text = (fields.body_text || '').trim();
+  const { data, error } = await supabase.from('emails').update({
+    to_addresses: fields.to_addresses?.length ? fields.to_addresses : null,
+    cc_addresses: fields.cc_addresses?.length ? fields.cc_addresses : null,
+    subject: fields.subject || null,
+    body_html: fields.body_html || null,
+    body_text: fields.body_text || null,
+    snippet: text ? text.slice(0, 200) : null,
+    linked_application_id: fields.linked_application_id || null,
+    thread_id: fields.thread_id || null,
+    parse_json: { draft: true, in_reply_to: fields.in_reply_to || null },
+    received_at: new Date().toISOString(),
+  }).eq('id', id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteEmail(id) {
+  const { error } = await supabase.from('emails').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function countDrafts() {
+  const { count, error } = await supabase.from('emails')
+    .select('id', { count: 'exact', head: true })
+    .eq('folder', 'draft');
+  if (error) throw error;
+  return count || 0;
+}
+
+// Look up an email by its provider message id — used to reload the parent of a
+// reply draft so the composer can quote/thread it correctly.
+export async function getEmailByMessageId(messageId) {
+  if (!messageId) return null;
+  const { data, error } = await supabase.from('emails')
+    .select('*, application:linked_application_id(id,role_title,stage,company:companies(name))')
+    .eq('provider_message_id', messageId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
 }
 
 // Tasks
@@ -605,6 +724,17 @@ export async function getUserProfile(id) {
   const { data, error } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
   if (error) throw error;
   return data;
+}
+
+// Persist (or clear) the user's learned writing-style profile. Passing null
+// clears both the profile and its timestamp. Stores extracted patterns only —
+// never raw email text.
+export async function saveWritingStyle(userId, style) {
+  const { error } = await supabase.from('users').update({
+    writing_style: style,
+    writing_style_updated_at: style ? new Date().toISOString() : null,
+  }).eq('id', userId);
+  if (error) throw error;
 }
 
 // Dashboard summary (derived)

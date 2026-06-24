@@ -1,63 +1,132 @@
 /**
  * @file Conversational "Ask AI" assistant with multi-turn history.
  *
- * Calls the `claude-proxy` Edge Function so the Anthropic API key never
- * touches the browser. The proxy accepts a `messages` array, so we pass
- * the full conversation history through it.
+ * Powers the Ask AI tab in the CmdK sidebar. Calls the `claude-proxy` Edge
+ * Function (the Anthropic key never touches the browser); the proxy accepts a
+ * `messages` array so the full conversation history is passed through.
+ *
+ *  - `fetchAskContext()` — cheap snapshot of the user's job search (counts +
+ *    a few recent items) rendered as a compact summary string.
+ *  - `askQuestion()`     — answers a question grounded in that summary.
  *
  * @module lib/agents/askAI
  */
-import { MODELS, callProxy, extractJson } from '../ai'
+import { MODELS, callProxy } from '../ai'
+import { supabase } from '../supabase'
+import { getDashboardSummary, listCalendar, listNudges } from '../api'
+import { STAGE_LABEL } from '../stages'
+import { shortDate } from '../time'
 
-const SYSTEM_PROMPT = `You are Hired AI, a smart job search assistant built into the Hired app. You have access to the user's job search data and can answer questions about it and take actions.
+const SYSTEM_PROMPT = `You are an AI assistant inside a job search management app. You help job seekers understand and manage their active job search.
 
-You can answer questions like:
-- 'Which companies haven't replied in 2 weeks?'
-- 'How many applications do I have in the interview stage?'
-- 'What should I follow up on today?'
+You have access to the user's current job search data (provided below). Answer their questions accurately based on this data.
 
-You can also suggest actions by including them in your response JSON.
+Rules:
+- Only reference data that is actually provided — never invent applications, companies, emails, or events
+- If you don't have enough data to answer, say so honestly
+- For data questions ("how many", "which", "when"), give exact numbers from the provided data
+- Keep answers concise: 2-4 sentences for simple questions, more detail only if needed
+- You can also give general advice about job searching, interviewing, salary negotiation, networking, etc.
+- Be encouraging but honest — don't sugarcoat bad situations
+- Use a friendly, supportive tone — like a smart friend who knows your job search inside and out
+- Format with bullet points or bold when it helps readability
 
-Return ONLY a valid JSON object:
-{
-  answer: string (your response in plain conversational language, can use markdown),
-  actions: [{ type: 'create_task' | 'archive_application' | 'open_application', payload: object }] | null
+Current job search data:
+`
+
+/**
+ * Build a compact, AI-readable snapshot of the user's job search. Uses counts
+ * and small LIMITed fetches — never the full record sets. RLS scopes every
+ * query to the signed-in user.
+ * @returns {Promise<string>} summary string for the system prompt
+ */
+export async function fetchAskContext() {
+  const now = new Date()
+  const weekAhead = new Date(now.getTime() + 7 * 24 * 3600 * 1000)
+
+  const [summary, events, nudges, tasksRes, emailsRes] = await Promise.all([
+    getDashboardSummary().catch(() => ({ total: 0, byStage: {} })),
+    listCalendar({ from: now.toISOString(), to: weekAhead.toISOString() }).catch(() => []),
+    listNudges().catch(() => []),
+    supabase.from('tasks')
+      .select('title, due_at')
+      .eq('done', false)
+      .gte('due_at', now.toISOString())
+      .lte('due_at', weekAhead.toISOString())
+      .order('due_at', { ascending: true })
+      .limit(10),
+    supabase.from('emails')
+      .select('subject, from_name, from_email, received_at')
+      .eq('is_unread', true)
+      .order('received_at', { ascending: false })
+      .limit(5),
+  ])
+
+  const tasks = tasksRes?.data || []
+  const emails = emailsRes?.data || []
+  const lines = []
+
+  // Applications by stage (only non-zero buckets).
+  const byStage = summary?.byStage || {}
+  const stageLines = Object.entries(byStage)
+    .filter(([, n]) => n > 0)
+    .map(([stage, n]) => `- ${STAGE_LABEL[stage] || stage}: ${n}`)
+  lines.push(`APPLICATIONS (active total: ${summary?.total || 0})`)
+  lines.push(stageLines.length ? stageLines.join('\n') : '- none')
+
+  lines.push(`\nTASKS DUE THIS WEEK (${tasks.length})`)
+  lines.push(tasks.length
+    ? tasks.map(t => `- ${t.title}${t.due_at ? ` (due ${shortDate(t.due_at)})` : ''}`).join('\n')
+    : '- none')
+
+  lines.push(`\nUPCOMING EVENTS — next 7 days (${events.length})`)
+  lines.push(events.length
+    ? events.map(e => {
+        const co = e.application?.company?.name
+        return `- ${e.title || 'Event'}${e.starts_at ? ` on ${shortDate(e.starts_at)}` : ''}${co ? ` (${co})` : ''}`
+      }).join('\n')
+    : '- none')
+
+  lines.push(`\nRECENT UNREAD EMAILS (${emails.length})`)
+  lines.push(emails.length
+    ? emails.map(e => `- "${e.subject || '(no subject)'}" from ${e.from_name || e.from_email || 'unknown'}`).join('\n')
+    : '- none')
+
+  lines.push(`\nACTIVE NUDGES (${nudges.length})`)
+  lines.push(nudges.length
+    ? nudges.map(n => `- ${n.body_md || n.kind}`).join('\n')
+    : '- none')
+
+  return lines.join('\n')
 }
-
-Be conversational, specific, and helpful. Reference actual company names and data from their search. Keep answers concise.`
 
 askQuestion.lastUsage = null
 
-export async function askQuestion(question, userContext, conversationHistory = []) {
+/**
+ * Ask a question grounded in the user's job search context.
+ * @param {string} question
+ * @param {string} contextSummary  output of fetchAskContext()
+ * @param {Array}  [conversationHistory] prior [{role, content}] turns
+ * @returns {Promise<{ answer: string, _usage: object }>}
+ */
+export async function askQuestion(question, contextSummary = '', conversationHistory = []) {
   if (!question || !question.trim()) throw new Error('Please provide a question.')
-
-  // Inline fresh user context as a prefix to the new question so the model
-  // sees current data every turn without bloating system. Older turns
-  // already carry the context they were given at the time.
-  const ctxSummary = userContext
-    ? `Here is the user's current job search context as JSON:\n\n${JSON.stringify({
-        applications: (userContext.applications || []).slice(0, 50),
-        stageCounts: userContext.stageCounts || {},
-        recentEmails: (userContext.recentEmails || []).slice(0, 10),
-        tasks: (userContext.tasks || []).slice(0, 20),
-      }, null, 2)}\n\n---\n\n`
-    : ''
 
   const messages = [
     ...conversationHistory,
-    { role: 'user', content: `${ctxSummary}USER QUESTION:\n${question}` },
+    { role: 'user', content: question.trim() },
   ]
 
   let data
   try {
     data = await callProxy({
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: SYSTEM_PROMPT + (contextSummary || '(no data available)'),
       messages,
       model: MODELS.smart,
-      max_tokens: 2000,
+      max_tokens: 1200,
     })
   } catch (err) {
-    throw new Error(`Ask AI failed: ${err.message}`)
+    throw new Error(`Ask AI failed: ${err.message}`, { cause: err })
   }
 
   askQuestion.lastUsage = {
@@ -67,17 +136,8 @@ export async function askQuestion(question, userContext, conversationHistory = [
   }
 
   const text = data?.content?.[0]?.text
-  if (typeof text !== 'string') throw new Error('Ask AI response did not include text content.')
-
-  let parsed
-  try {
-    parsed = extractJson(text)
-  } catch {
-    return { answer: text, actions: null, _usage: askQuestion.lastUsage }
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('Ask AI response did not include text content.')
   }
-  if (!parsed || typeof parsed !== 'object' || typeof parsed.answer !== 'string') {
-    return { answer: text, actions: null, _usage: askQuestion.lastUsage }
-  }
-  parsed._usage = askQuestion.lastUsage
-  return parsed
+  return { answer: text.trim(), _usage: askQuestion.lastUsage }
 }

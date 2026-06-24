@@ -21,7 +21,7 @@ const useIsMobile = () => {
 }
 
 export default function Layout() {
-  const { drawerId, emailId, cmdK, setCmdK, closeDrawer, closeEmail, upgradeFeature, closeUpgrade, composeState, closeCompose } = useUI()
+  const { drawerId, emailId, cmdK, closeCmdK, closeDrawer, closeEmail, upgradeFeature, closeUpgrade, composeState, closeCompose } = useUI()
   const isMobile = useIsMobile()
   const [counts, setCounts] = useState({ '/tracker': 0, '/inbox': 0 })
 
@@ -52,7 +52,7 @@ export default function Layout() {
         </MobileLayout>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
         {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
-        {cmdK && <CmdK onClose={() => setCmdK(false)} />}
+        {cmdK && <CmdK initialTab={cmdK} onClose={closeCmdK} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
         {composeState && <ComposeEmail key={JSON.stringify(composeState)} {...composeState} onClose={closeCompose} onSent={onComposeSent} />}
       </>
@@ -68,7 +68,7 @@ export default function Layout() {
         </div>
         {drawerId && <Drawer id={drawerId} onClose={closeDrawer} />}
         {emailId && <EmailDrawer id={emailId} onClose={closeEmail} />}
-        {cmdK && <CmdK onClose={() => setCmdK(false)} />}
+        {cmdK && <CmdK initialTab={cmdK} onClose={closeCmdK} />}
         {upgradeFeature && <UpgradeModal feature={upgradeFeature} onClose={closeUpgrade} />}
         {composeState && <ComposeEmail key={JSON.stringify(composeState)} {...composeState} onClose={closeCompose} onSent={onComposeSent} />}
       </div>

@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Sparkles, Check, Mail, Calendar, Plug, LogOut, User } from 'lucide-react'
+import { Sparkles, Check, Mail, Plug, LogOut, User, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import AppBar from '../components/AppBar'
 import { useAuth } from '../hooks/useAuth'
+import { useUI } from '../hooks/useUI'
+import { useStyleLearner } from '../hooks/useStyleLearner'
 import { supabase } from '../lib/supabase'
 import toast from 'react-hot-toast'
 
@@ -66,6 +68,8 @@ export default function Settings() {
             </button>
           </Section>
 
+          <WritingStyleSection />
+
           <Section title="Hired forwarding email" Icon={Mail}>
             <div className="card spotlight" style={{ padding: 16 }}>
               <div className="eyebrow" style={{ marginBottom: 6 }}>Your forwarding address</div>
@@ -94,6 +98,64 @@ export default function Settings() {
         </div>
       </div>
     </>
+  )
+}
+
+function WritingStyleSection() {
+  const { profile } = useAuth()
+  const { openUpgrade } = useUI()
+  const { styleEnabled, hasStyle, learning, learnStyle, clearStyle } = useStyleLearner()
+
+  const updatedAt = profile?.writing_style_updated_at
+  const summary = profile?.writing_style?.summary
+  let lastAnalyzed = ''
+  if (updatedAt) { try { lastAnalyzed = new Date(updatedAt).toLocaleDateString() } catch { lastAnalyzed = '' } }
+
+  const onClear = async () => {
+    if (!window.confirm('This will remove your learned style. You can re-analyze anytime.')) return
+    await clearStyle()
+  }
+
+  return (
+    <Section title="AI writing style" Icon={Sparkles}>
+      {!styleEnabled ? (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          Learn your personal writing voice so AI replies and drafts sound like you.{' '}
+          <button onClick={() => openUpgrade('style_analysis')} style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--accent-ink)', fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' }}>
+            Upgrade to Pro
+          </button>{' '}to unlock it.
+        </div>
+      ) : hasStyle ? (
+        <>
+          <div className="card" style={{ padding: 14 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Your AI writing style</div>
+            <div style={{ fontSize: 12.5, color: 'var(--ink)', lineHeight: 1.6 }}>{summary || 'Style profile saved.'}</div>
+            {lastAnalyzed && (
+              <div className="mono muted" style={{ fontSize: 10.5, marginTop: 8 }}>Last analyzed: {lastAnalyzed}</div>
+            )}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn ghost tiny" disabled={learning} onClick={learnStyle} title="Re-analyze your sent emails (uses 1 style credit)">
+              {learning ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+              {learning ? 'Analyzing…' : 'Re-analyze'}
+            </button>
+            <button className="btn ghost tiny" disabled={learning} onClick={onClear}>
+              <Trash2 size={12} />Clear style
+            </button>
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          No writing style learned yet. Send a few emails and use the “Learn My Style” option in any email reply — or analyze now.
+          <div style={{ marginTop: 10 }}>
+            <button className="btn primary tiny" disabled={learning} onClick={learnStyle}>
+              {learning ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />}
+              {learning ? 'Analyzing your style…' : 'Learn my style'}
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
   )
 }
 

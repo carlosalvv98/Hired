@@ -4,8 +4,10 @@ import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import { useUI } from '../hooks/useUI'
 import { useLimit } from '../hooks/useLimit'
+import { useStyleLearner } from '../hooks/useStyleLearner'
 import { guardLimit } from '../lib/limitGuard'
 import { callProxy, trackUsage, extractJson, MODELS } from '../lib/ai'
+import { buildDraftStyleSystem } from '../lib/agents/styleAnalyzer'
 import { relTime } from '../lib/time'
 
 // Outbound email drafter — thank-you notes, follow-ups, and cold outreach the
@@ -67,6 +69,7 @@ export default function OutboundDraft({
   const { user } = useAuth()
   const { openUpgrade, openCompose } = useUI()
   const { allowed, used, limit, refresh } = useLimit('email_replies')
+  const { styleEnabled, hasStyle, style, learning, learnStyle } = useStyleLearner()
 
   const cacheKey = `${app.id || 'none'}:${draftType}`
   const presetPurpose = DRAFT_TYPE_PURPOSE[draftType] || null
@@ -115,13 +118,14 @@ export default function OutboundDraft({
         app.last_activity_at && `Last activity: ${relTime(app.last_activity_at)}`,
       ].filter(Boolean).join('\n') || 'No application context available.'
 
+      const isStyle = tone === 'my_style'
       const userMessage =
         `Context:\n${context}\n\n` +
         `Purpose: ${PURPOSES[purpose].label.replace(/^[^\w]+/, '').trim()}\n` +
-        `Tone: ${TONES[tone].label}\n\nWrite the email now.`
+        `${isStyle ? '' : `Tone: ${TONES[tone].label}\n`}\nWrite the email now.`
 
       const data = await callProxy({
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: isStyle ? buildDraftStyleSystem(style) : SYSTEM_PROMPT,
         userMessage,
         model: MODELS.fast,
         max_tokens: 1000,
@@ -239,6 +243,21 @@ export default function OutboundDraft({
       <div>
         <div className="eyebrow" style={{ fontSize: 9.5, marginBottom: 6 }}>Tone</div>
         <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {styleEnabled && (hasStyle ? (
+            <button className={`btn tiny style-pill ${tone === 'my_style' ? 'on' : ''}`}
+              title="Draft in your learned writing voice" disabled={loading}
+              onClick={() => setTone('my_style')}>
+              <Sparkles size={11} />My Style
+            </button>
+          ) : (
+            <button className="btn tiny style-pill learn"
+              title="Analyze your sent emails to learn your writing voice"
+              disabled={loading || learning}
+              onClick={learnStyle}>
+              {learning ? <Loader2 size={11} className="spin" /> : <Sparkles size={11} />}
+              {learning ? 'Analyzing…' : 'Learn My Style'}
+            </button>
+          ))}
           {Object.keys(TONES).map(k => (
             <button key={k} className={`btn tiny ${tone === k ? 'indigo' : 'ghost'}`}
               title={TONES[k].hint} disabled={loading}

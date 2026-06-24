@@ -37,7 +37,12 @@ export function AuthProvider({ children }) {
   // when the profile row hasn't loaded yet — keeps gating safe-by-default.
   const user = useMemo(() => {
     if (!authUser) return null
-    return { ...authUser, plan: profile?.plan || 'free' }
+    return {
+      ...authUser,
+      plan: profile?.plan || 'free',
+      writing_style: profile?.writing_style || null,
+      writing_style_updated_at: profile?.writing_style_updated_at || null,
+    }
   }, [authUser, profile])
 
   const signIn = (email, password) => supabase.auth.signInWithPassword({ email, password })
